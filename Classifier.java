@@ -1,6 +1,7 @@
 package nndep;
 
 import edu.stanford.nlp.ling.CoreAnnotations;
+import edu.stanford.nlp.parser.shiftreduce.Transition;
 import edu.stanford.nlp.util.CollectionUtils;
 import edu.stanford.nlp.util.CoreMap;
 import edu.stanford.nlp.util.Pair;
@@ -20,6 +21,8 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.IntStream;
 
 import static java.util.stream.Collectors.toSet;
+
+import java.lang.reflect.Array;
 
 /**
  * Neural network classifier which powers a transition-based dependency
@@ -220,7 +223,7 @@ public class Classifier {
     	  ThreadLocalRandom random = ThreadLocalRandom.current();
     	 
     	  
-    	  List<DepState> beam = new ArrayList<DepState>();
+//    	  List<DepState> beam = new ArrayList<DepState>();
     	  Configuration c = system.initialConfiguration(sentence);
     	  DepState goldState = null;
     	 // if(system.canApply(c, system.transitions.get(nActNum-1))){
@@ -232,23 +235,21 @@ public class Classifier {
     	  
     	  // only store the best beam candidates in decoding!
     	  DepState initialState = new DepState(c, -1, 0.0);
-    	  beam.add(initialState) ;
+    	  Beam beam = new Beam(nBeam);
+    	  beam.insert(initialState);
 
     	  // the lattice to store states to be sorted
-    	  List<DepState> lattice = new ArrayList<DepState>();
+    	  ArrayList<ArrayList<DepState>> beamLattice = new ArrayList<ArrayList<DepState>>();
         
     	  // begin to do nRound-th action
     	  for(int i = 0; i < nRound; i++){
     		  
 //    		  System.err.println("round###################################");
-    		  
-    		  lattice.clear();
-    		  boolean beamGold = false;
+    		  beamLattice.clear();
     		  int goldAct = goldActs.get(i);
     		  
     		  //begin to expand
-    		  for(int j=0; j<beam.size(); j++ ){
-    			  DepState beam_j = beam.get(j);
+    		  for(DepState beam_j : beam){
     			  int[] dropOutArray = IntStream.range(0, config.hiddenSize)
                           .filter(n -> random.nextDouble() > params.getDropOutProb())
                           .toArray();
@@ -266,48 +267,47 @@ public class Classifier {
     			  
     			  // add all expanded candidates to lattice
 //    			  System.err.println(j+" lattice###################################");
+    			  ArrayList<DepState> beamItem = new ArrayList<DepState>();  // states in beamItem are
+    			  															 // expanded from the same state 
     			  for(int k = 0; k<nActNum; k++){
     				  if( predictLabel.get(k) != -1 ){
     					  DepState expandState = new DepState(beam_j.c, k , beam_j.score + scores[k], beam_j, 
     							  beam_j.bGold && k==goldAct );
     					  if(expandState.bGold)
     						  goldState = expandState;
-    					  lattice.add(expandState);
+    					  beamItem.add(expandState);
 //    					  System.err.println(k+"# "+lattice.get(lattice.size()-1));
     				  }
     			  }
+    			  
+    			  if(beamItem.size() != 0)
+    				  beamLattice.add(beamItem);
     		  }
-    		  
-    		  // sort the lattice
-    		  Collections.sort(lattice);
     		  
     		  //add from lattice to beam
-    		  beam.clear();
-    		  for(int m = 0; m<(nBeam > lattice.size() ? lattice.size() : nBeam); m++){
-    			  beam.add(m, lattice.get(m));
-    			  beamGold = beamGold || lattice.get(m).bGold;
-    		  }
+    		  beam = new Beam(nBeam);
+    		  for(ArrayList<DepState> beamLatticeItem : beamLattice)
+    			  for(DepState state : beamLatticeItem)
+    				  beam.insert(state);
     		  
     		  // apply these states, lazy expand
     		  for(DepState state : beam){
     			  state.StateApply(system);
-    			  
     			  //print for debug
 //    			  System.err.println(nRound+"\t"+beam_index++ +"\t"+state.toString());
 //    			  System.err.println(state.actionSequence());
     		  }
     		  
     		  //early update
-    		  if(config.earlyUpdate){
-    			  if(!beamGold){
+    		  if(beam.beamGold){
     				  goldState.StateApply(system);
     				  updateEarly = true;
     				  break;
-    			  }
-    		  }
+    		   }
+    		  
     	  } //end nRound
     	  
-    	  DepState predictState = beam.get(0);
+    	  DepState predictState = beam.maxScoreState;
     	  List<Integer> predictActs = predictState.actionSequence();
     	  
     	  //get the first disagreement  of two action sequences
@@ -346,41 +346,51 @@ public class Classifier {
 			  beam.add(goldState);
 		  
 		  if(!config.bAggressiveUpdate && !updateEarly){
-			  if(beam.get(0).bGold)
+			  if(beam.maxScoreState.bGold)
 				  continue;  //skip update if predict right!
 		  }
+	
+		  double[][] gradients = new double[beam.size()][nActNum];
+		  double[] totalGradients = new double[beam.size()];
 		  
-		  nBeam = beam.size();
-		  double[] predictupdatePara = new double[nBeam];
-		  
-		  double maxVal = beam.get(0).score;  //get the max score
 		  double sum =0;
-		  for(int b_j = 0; b_j<nBeam; b_j++){
-			  predictupdatePara[b_j] = Math.exp(beam.get(b_j).score - maxVal);
-			  sum += predictupdatePara[b_j]; 
+		  double maxVal = beam.maxScoreState.score;  //get the max score
+		  for(int i = 0; i < beamLattice.size(); i++){
+			  ArrayList<DepState> beamLatticeItem = beamLattice.get(i);
+			  for(int j = 0; j < beamLatticeItem.size(); j++){
+				  gradients[i][j] =  Math.exp(beamLatticeItem.get(j).score - maxVal);
+				  sum += gradients[i][j];
+			  }
 		  }
 		  
-		  double[] para_unnorm = Arrays.copyOf(predictupdatePara, predictupdatePara.length);
+		  /*
+		   * copy a un-normalized gradients arrays
+		   */
+		  double[][] gradientsUnNormal = new double[beam.size()][nActNum];
+		  for(int gi = 0; gi < gradients.length; gi++)
+			  gradientsUnNormal[gi] = Arrays.copyOf(gradients[gi], gradients[gi].length);
 		  
-
-		  //set the gradients of each beam candidate
-		  for(int b_j = 0; b_j<nBeam; b_j++){
-			  
-			  int t = beam.get(b_j).bGold ? 1 : 0;
-			  predictupdatePara[b_j] =  predictupdatePara[b_j] / sum;
-			  if(predictupdatePara[b_j] <= 0.5)
-				  predictupdatePara[b_j]  = predictupdatePara[b_j]  - t;
-			  else
-				  predictupdatePara[b_j] = (1 - t) - (sum - para_unnorm[b_j])/sum;
-				
+		  for(int i = 0; i < beamLattice.size(); i++){
+			  ArrayList<DepState> beamLatticeItem = beamLattice.get(i);
+			  for(int j = 0; j < beamLatticeItem.size(); j++){
+				  
+				  int t = beamLatticeItem.get(j).bGold ? 1 : 0;
+				  gradients[i][j] =  gradients[i][j] / sum;
+				  if(gradients[i][j] <= 0.5)
+					  gradients[i][j]  = gradients[i][j]  - t;
+				  else
+					  gradients[i][j] = (1 - t) - (sum - gradientsUnNormal[i][j])/sum;
+				  
+				  totalGradients[i] += gradients[i][j];
+			  }
 		  }
-    		  
-		  // update parameters
+		  
+		  	  // update parameters
     		  /*
     		   *   training k-best candidates in the beam
     		   */
-    		  for(int k = 0; k<nBeam; k++){
-    			  DepState beamState = beam.get(k);
+    		  for(int k = 0; k<beamLattice.size(); k++){
+    			  DepState beamState = beamLattice.get(k).get(0);
     			  
     			  for(int i = 0; i<predictActs.size(); i++){
     			  
@@ -391,8 +401,14 @@ public class Classifier {
     				  List<Integer> label = beamState.lastState.labels;
     				  label.set(beamState.act, 1);
     				  //update predict
-    				  trainFeatures(params, beamState.lastState.featureArray, label, 
-    						  false, predictupdatePara[k], beamState.lastState.dropOutArray);
+    				  
+    				  if(k == 0)
+    					  trainFeatures(params, beamState.lastState.featureArray, label, 
+    						  false, 0, beamState.lastState.dropOutArray, gradients[k]);
+    				  else
+    					  trainFeatures(params, beamState.lastState.featureArray, label, 
+        						  false, totalGradients[k], beamState.lastState.dropOutArray, null);
+    				  
     				  //set the label back for next use!
     				  label.set(beamState.act, 0);
     				  beamState = beamState.lastState;
@@ -411,7 +427,7 @@ public class Classifier {
      * @param bGold
      */
     public void trainFeatures( FeedforwardParams params, int[] feature, List<Integer> label, 
-    		boolean bGold, double expDecay, int[] dropOutArray){
+    		boolean bGold, double expDecay, int[] dropOutArray, double[] gradients){
     	
     	double[] scores = new double[numLabels];
         double[] hidden = new double[config.hiddenSize];
@@ -453,22 +469,27 @@ public class Classifier {
           hidden3[nodeIndex] = Math.pow(hidden[nodeIndex], 3);
         }
 
-        // Feed forward to softmax layer (no activation yet)
-        for (int i = 0; i < numLabels; ++i) {
-          if (label.get(i) >= 0) {
-            for (int nodeIndex : ls)
-              scores[i] += W2[i][nodeIndex] * hidden3[nodeIndex];
-          }
-        }
+        /* 
+         * in training, we only need to get the final score, we only need to 
+         * get the hidden and compute gradients
+         * 
+         */
+//        // Feed forward to softmax layer (no activation yet)
+//        for (int i = 0; i < numLabels; ++i) {
+//          if (label.get(i) >= 0) {
+//            for (int nodeIndex : ls)
+//              scores[i] += W2[i][nodeIndex] * hidden3[nodeIndex];
+//          }
+//        }
         
         /*
          *   get the error array!
          */
         double[] gradHidden3 = new double[config.hiddenSize];
         for (int i = 0; i < numLabels; ++i)
-          if (label.get(i) == 1) {
+          if (gradients != null || label.get(i) == 1) {
         	  
-        	  double delta =  expDecay / params.getBatchSize(); 
+        	  double delta =  (gradients != null ? gradients[i] : expDecay) / params.getBatchSize(); 
         	  //cross entropy loss
             for (int nodeIndex : ls) {
               gradW2[i][nodeIndex] += delta * hidden3[nodeIndex];
@@ -1257,7 +1278,7 @@ public Cost computeGlobalCostFunction(List<GlobalExample> globalExamples, int ba
 
 	    //get the examples in the global examples
 	    List<Example> examples = new ArrayList<Example>();
-	    for(GlobalExample ge : gloExamples)
+ 	    for(GlobalExample ge : gloExamples)
 	    	examples.addAll(ge.getExamples());
 	    
 	    // Redo precomputations for only those features which are triggered

@@ -129,10 +129,10 @@ class Util {
           sentence = new CoreLabel();
           sentenceTokens = new ArrayList<>();
         } else {
-          String word = splits[0],
-                  pos = splits[1],
-                  depType = splits[3];
-          int head = Integer.parseInt(splits[2]) + 1; // because my data begin from 0 and root head is -1, so...
+          String word = splits[1],
+                  pos = splits[4],
+                  depType = splits[7];
+          int head = Integer.parseInt(splits[6]); // because my data begin from 0 and root head is -1, so...
 
           CoreLabel token = tf.makeToken(word, 0, 0);
           token.setTag(pos);
