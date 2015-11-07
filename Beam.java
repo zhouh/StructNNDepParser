@@ -17,8 +17,6 @@ public class Beam extends PriorityQueue<DepState>{
 	
 	public int beam;
 	
-	public boolean beamGold;
-	
 	public double maxScore = Double.NEGATIVE_INFINITY;
 	public DepState maxScoreState = null;
 	
@@ -43,7 +41,6 @@ public class Beam extends PriorityQueue<DepState>{
 	     });
 		
 		this.beam=beam;
-		beamGold = false;
 		
 	}
 	
@@ -60,7 +57,6 @@ public class Beam extends PriorityQueue<DepState>{
 		
 		if(this.size()<beam) {
 			offer(item);
-			beamGold = beamGold || item.bGold;
 		}
 		else if(item.score<=peek().score) return;
 		else {
@@ -71,7 +67,14 @@ public class Beam extends PriorityQueue<DepState>{
 	
 	public void clear() {
 		this.clear();
-		beamGold = false;
+	}
+	
+	public boolean beamGold(){
+		for(DepState state : this){
+			if(state.bGold)
+				return true;
+		}
+		return false;
 	}
 
 	/**

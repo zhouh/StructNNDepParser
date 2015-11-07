@@ -81,7 +81,7 @@ public class DepState implements Comparable{
 
 	@Override
 	public String toString() {
-		return "DepState [score=" + score + ", c=" + c + ", bGold=" + bGold
+		return "DepState [action sequence: "+actionSequence()+ " score=" + score + ", c=" + c + ", bGold=" + bGold
 				+ "]";
 	}
 
