@@ -97,7 +97,7 @@ public class DependencyParser {
    * The {@link edu.stanford.nlp.parser.nndep.Classifier} class
    * handles both training and inference.
    */
-  private Classifier classifier;
+  private StructuredPredictClassifier classifier;
 
   private ParsingSystem system;
 
@@ -621,7 +621,7 @@ public class DependencyParser {
         }
       }
       input.close();
-      classifier = new Classifier(config, E, W1, b1, W2, preComputed);
+      classifier = new StructuredPredictClassifier(config, E, W1, b1, W2, preComputed);
     } catch (IOException e) {
       throw new RuntimeIOException(e);
     }
@@ -889,7 +889,7 @@ public class DependencyParser {
     		  
     	  }
     	  else{
-    		  Classifier.Cost cost = classifier.computeGlobalCostFunction(globalExamples, config.batchSize, config.regParameter, config.dropProb,
+    		  StructuredPredictClassifier.Cost cost = classifier.computeGlobalCostFunction(globalExamples, config.batchSize, config.regParameter, config.dropProb,
     				  config.nBeam, config.dMargin);
     		  System.err.println("Cost = " + cost.getCost() + ", Correct(%) = " + cost.getPercentCorrect());
     		  classifier.takeAdaGradientStep(cost, config.adaAlpha, config.adaEps);
@@ -1010,7 +1010,7 @@ public class DependencyParser {
     System.err.println("Found embeddings: " + foundEmbed + " / " + knownWords.size());
 
     Dataset trainSet = genTrainExamples(trainSents, trainTrees);
-    classifier = new Classifier(config, trainSet, E, W1, b1, W2, preComputed);
+    classifier = new StructuredPredictClassifier(config, trainSet, E, W1, b1, W2, preComputed);
     classifier.setParsingSystem(system);
   }
 

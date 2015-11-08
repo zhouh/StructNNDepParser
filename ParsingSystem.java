@@ -32,7 +32,7 @@ public abstract class ParsingSystem {
    */
   protected final String rootLabel;
 
-  protected List<String> labels, transitions;
+  protected List<String> labels, transitions, actionType;
 
   /**
    * Generate all possible transitions which this parsing system can
@@ -101,6 +101,11 @@ public abstract class ParsingSystem {
   public ParsingSystem(TreebankLanguagePack tlp, List<String> labels, boolean verbose) {
     this.tlp = tlp;
     this.labels = new ArrayList<>(labels);
+    
+    actionType.add("L");
+    actionType.add("R");
+    actionType.add("S");
+    
 
     //NOTE: assume that the first element of labels is rootLabel
     rootLabel = labels.get(0);
@@ -242,7 +247,7 @@ public abstract class ParsingSystem {
     double sum = 0;
     
     for(int i = 0; i<sentences.size(); i++){
-    	Map<String, Double> oneSentResult = evaluateOnrSent(sentences.get(i), trees.get(i), goldTrees.get(i));
+    	Map<String, Double> oneSentResult = evaluateOneSent(sentences.get(i), trees.get(i), goldTrees.get(i));
     	correct += oneSentResult.get("correct");
     	sum += oneSentResult.get("sum");
     }
@@ -257,7 +262,7 @@ public abstract class ParsingSystem {
    *  get the UAS of a sentence other than a corpus
    * 
    */
-  public Map<String, Double> evaluateOnrSent(CoreMap sentence,List<DependencyTree> trees,
+  public Map<String, Double> evaluateOneSent(CoreMap sentence,List<DependencyTree> trees,
           DependencyTree goldTree) {
   
 	  Map<String, Double> result = new HashMap<String, Double>();
