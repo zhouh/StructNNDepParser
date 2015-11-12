@@ -1,16 +1,11 @@
 package nndep;
 
-import edu.stanford.nlp.ling.CoreAnnotations;
 import edu.stanford.nlp.util.CollectionUtils;
-import edu.stanford.nlp.util.CoreMap;
 import edu.stanford.nlp.util.Pair;
 import edu.stanford.nlp.util.concurrent.MulticoreWrapper;
 import edu.stanford.nlp.util.concurrent.ThreadsafeProcessor;
 
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collection;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -48,6 +43,7 @@ public class Classifier {
 
   // Weight matrices
   private final double[][] W1, W2, E;
+  private final double[][][] labelLayer;
   private final double[] b1;
 
   // Global gradSaved
@@ -56,6 +52,9 @@ public class Classifier {
   // Gradient histories
   private double[][] eg2W1, eg2W2, eg2E;
   private double[] eg2b1;
+  private double[][][] eg2LabelLayer;  //used for hierachical softmax, weight from action to action label, 
+	   								   //3 dimension array because we want to control whether all 
+
 
   /**
    * Pre-computed hidden layer unit activations. Each double array
@@ -93,7 +92,9 @@ public class Classifier {
    * Threaded job output: cost value, weight gradients for partition of
    * minibatch
    */
-  private final MulticoreWrapper<Pair<Collection<GlobalExample>, FeedforwardParams>, Cost> jobHandler;
+  private final MulticoreWrapper<Pair<Collection<GlobalExample>, FeedforwardParams>, Cost> structJobHandler;
+  
+  private final MulticoreWrapper<Pair<Collection<Example>, FeedforwardParams>, Cost> greedyJobHandler;
 
   private final Config config;
 
@@ -101,7 +102,11 @@ public class Classifier {
    * Number of possible dependency relation labels among which this
    * classifier will choose.
    */
-  private final int numLabels;
+  private final int numActType;
+  
+  private final int numDepLabel;
+  
+  private final int numGreedyCombinedActs;
   
   private ParsingSystem system;
   
@@ -118,8 +123,8 @@ public class Classifier {
    * @param W2
    * @param preComputed
    */
-  public Classifier(Config config, double[][] E, double[][] W1, double[] b1, double[][] W2, List<Integer> preComputed) {
-    this(config, null, E, W1, b1, W2, preComputed);
+  public Classifier(Config config, double[][] E, double[][] W1, double[] b1, double[][] W2, double[][][] labelLayer, List<Integer> preComputed) {
+    this(config, null, E, W1, b1, W2, labelLayer, preComputed);
   }
 
   /**
@@ -134,7 +139,7 @@ public class Classifier {
    * @param W2
    * @param preComputed
    */
-  public Classifier(Config config, Dataset dataset, double[][] E, double[][] W1, double[] b1, double[][] W2,
+  public Classifier(Config config, Dataset dataset, double[][] E, double[][] W1, double[] b1, double[][] W2, double[][][] labelLayer,
                     List<Integer> preComputed) {
     this.config = config;
     this.dataset = dataset;
@@ -143,20 +148,32 @@ public class Classifier {
     this.W1 = W1;
     this.b1 = b1;
     this.W2 = W2;
+    this.labelLayer = labelLayer;
 
     initGradientHistories();
 
-    numLabels = W2.length;
+    numActType = W2.length;
+    numDepLabel = labelLayer[0].length;
+    
+    numGreedyCombinedActs = W2.length;
 
     preMap = new HashMap<>();
     for (int i = 0; i < preComputed.size(); ++i)
       preMap.put(preComputed.get(i), i);
 
-    isTraining = dataset != null;
-    if (isTraining)
-      jobHandler = new MulticoreWrapper<>(config.trainingThreads, new CostFunction(), false);
-    else
-      jobHandler = null;
+		isTraining = dataset != null;
+		if (isTraining)
+			if (config.globalTraining) {
+				structJobHandler = new MulticoreWrapper<>(config.trainingThreads, new GlobalCostFunction(), false);
+				greedyJobHandler = null;
+			} else {
+				structJobHandler = null;
+				greedyJobHandler = new MulticoreWrapper<>(config.trainingThreads, new GreedyCostFunction(), false);
+			}
+		else {
+			structJobHandler = null;
+			greedyJobHandler = null;
+		}
   }
   
   /**
@@ -169,22 +186,210 @@ public class Classifier {
   public void setParser(DependencyParser parser){
 	  this.parser = parser;
   }
-
+  
   /**
-   * Evaluates the training cost of a particular subset of training
-   * examples given the current learned weights.
+   * greedy classifier for training
+   * @author zhouh
    *
-   * This function will be evaluated in parallel on different data in
-   * separate threads, and accesses the classifier's weights stored in
-   * the outer class instance.
-   *
-   * Each nested class instance accumulates its own weight gradients;
-   * these gradients will be merged on a main thread after all cost
-   * function runs complete.
-   *
-   * @see #computeCostFunction(int, double, double)
    */
-  private class CostFunction implements ThreadsafeProcessor<Pair<Collection<GlobalExample>, FeedforwardParams>, Cost> {
+  private class GreedyCostFunction implements ThreadsafeProcessor<Pair<Collection<Example>, FeedforwardParams>, Cost> {
+
+	    private double[][] gradW1;
+	    private double[] gradb1;
+	    private double[][] gradW2;
+	    private double[][] gradE;
+	    private double[][][] gradLabelLayer;
+
+	    @Override
+	    public Cost process(Pair<Collection<Example>, FeedforwardParams> input) {
+	      Collection<Example> examples = input.first();
+	      FeedforwardParams params = input.second();
+
+	      // We can't fix the seed used with ThreadLocalRandom
+	      // TODO: Is this a serious problem?
+	      ThreadLocalRandom random = ThreadLocalRandom.current();
+
+	      gradW1 = new double[W1.length][W1[0].length];
+	      gradb1 = new double[b1.length];
+	      gradW2 = new double[W2.length][W2[0].length];
+	      gradE = new double[E.length][E[0].length];
+	      gradLabelLayer = new double[labelLayer.length][labelLayer[0].length][labelLayer[0][0].length];
+
+	      double cost = 0.0;
+	      double correct = 0.0;
+
+	      for (Example ex : examples) {
+	        List<Integer> feature = ex.getFeature();
+	        List<Integer> actTypeLabel = ex.getactLabel();
+	        List<Integer> depTypeLabel = ex.getDepLabelLabel();
+	        
+	        double[] actScores = new double[numActType];
+	        double[] depLabelScores = new double[numDepLabel];
+	        double[] hidden = new double[config.hiddenSize];
+	        double[] hidden3 = new double[config.hiddenSize];
+
+	        // Run dropout: randomly drop some hidden-layer units. `ls`
+	        // contains the indices of those units which are still active
+	        int[] ls = IntStream.range(0, config.hiddenSize)
+	                            .filter(n -> random.nextDouble() > params.getDropOutProb())
+	                            .toArray();
+
+	        int offset = 0;
+	        for (int j = 0; j < config.numTokens; ++j) {
+	          int tok = feature.get(j);
+	          int index = tok * config.numTokens + j;
+
+	          if (preMap.containsKey(index)) {
+	            // Unit activations for this input feature value have been
+	            // precomputed
+	            int id = preMap.get(index);
+
+	            // Only extract activations for those nodes which are still
+	            // activated (`ls`)
+	            for (int nodeIndex : ls)
+	              hidden[nodeIndex] += saved[id][nodeIndex];
+	          } else {
+	            for (int nodeIndex : ls) {
+	              for (int k = 0; k < config.embeddingSize; ++k)
+	                hidden[nodeIndex] += W1[nodeIndex][offset + k] * E[tok][k];
+	            }
+	          }
+	          offset += config.embeddingSize;
+	        }
+
+	        // Add bias term and apply activation function
+	        for (int nodeIndex : ls) {
+	          hidden[nodeIndex] += b1[nodeIndex];
+	          hidden3[nodeIndex] = Math.pow(hidden[nodeIndex], 3);
+	        }
+	        
+	        /*
+	         * begin to hierarchical parsing
+	         */
+	        
+	     
+	        int optactType = -1;
+	        int oracleActType = -1;
+	        for (int i = 0; i < numActType; ++i) {
+	          if (actTypeLabel.get(i) >= 0) {
+	        	if(actTypeLabel.get(i) == 1)
+	        			oracleActType = i;  
+	            for (int nodeIndex : ls)
+	              actScores[i] += W2[i][nodeIndex] * hidden3[nodeIndex];
+
+	            if (optactType < 0 || actScores[i] > actScores[optactType])
+	            	optactType = i;
+	          }
+	        }
+
+	        double sum1 = 0.0;
+	        double sum2 = 0.0;
+	        double maxScore = actScores[optactType];
+	        for (int i = 0; i < numActType; ++i) {
+	          if (actTypeLabel.get(i) >= 0) {
+	        	  actScores[i] = Math.exp(actScores[i] - maxScore);
+	            if (actTypeLabel.get(i) == 1) sum1 += actScores[i];
+	            sum2 += actScores[i];
+	          }
+	        }
+
+	        
+
+	        /*
+	         *  softmax on the valid dep labels
+	         */
+	        int optDepType = -1;
+	        double depTypeSum2 = 0.0;
+	        
+	        if(oracleActType != system.shiftActTypeID) //system.nShift == 0
+	        {
+	        	for (int i = 0; i < numDepLabel; ++i) {
+						
+	        		if (depTypeLabel.get(i) >= 0) {
+	        			for (int nodeIndex : ls)
+	        				depLabelScores[i] += labelLayer[oracleActType][i][nodeIndex] * hidden3[nodeIndex];  // change the index//////////////////////
+	        			
+	        			if (optDepType < 0 || depLabelScores[i] > depLabelScores[optDepType])
+	        				optDepType = i;
+	        		}
+	        	}
+	        	
+	        	double labelMaxScore = depLabelScores[optDepType];
+	        	for (int i = 0; i < numDepLabel; ++i) {
+	        		if (depTypeLabel.get(i) >= 0) {
+	        			depLabelScores[i] = Math.exp(depLabelScores[i] - labelMaxScore);
+	        			depTypeSum2 += depLabelScores[i];
+	        		}
+	        	}
+	        }
+
+	        cost += (Math.log(sum2) - Math.log(sum1)) / params.getBatchSize();
+	        
+	        if (actTypeLabel.get(optactType) == 1)
+	          correct += +1.0 / params.getBatchSize();
+
+	        double[] gradHidden3 = new double[config.hiddenSize];
+	        
+	        for (int i = 0; i < numActType; ++i)
+	            if (actTypeLabel.get(i) >= 0) {
+	              double delta = -(actTypeLabel.get(i) - actScores[i] / sum2) / params.getBatchSize();
+	              for (int nodeIndex : ls) {
+	                gradW2[i][nodeIndex] += delta * hidden3[nodeIndex];
+	                gradHidden3[nodeIndex] += delta * W2[i][nodeIndex];
+	              }
+	            }
+	        
+	        if(oracleActType != system.shiftActTypeID){
+	        	for (int i = 0; i < numDepLabel; ++i)
+	        		if (depTypeLabel.get(i) >= 0) {
+	        			double delta = -(depTypeLabel.get(i) - depLabelScores[i] / depTypeSum2) / params.getBatchSize();
+	        			for (int nodeIndex : ls) {
+	        				gradLabelLayer[oracleActType][i][nodeIndex] += delta * hidden3[nodeIndex];		// change the index//////////////////////
+	        				gradHidden3[nodeIndex] += delta * labelLayer[oracleActType][i][nodeIndex];		// change the index//////////////////////
+	        			}
+	        		}
+	        }
+	        
+	        double[] gradHidden = new double[config.hiddenSize];
+	        for (int nodeIndex : ls) {
+	          gradHidden[nodeIndex] = gradHidden3[nodeIndex] * 3 * hidden[nodeIndex] * hidden[nodeIndex];
+	          gradb1[nodeIndex] += gradHidden3[nodeIndex];
+	        }
+
+	        offset = 0;
+	        for (int j = 0; j < config.numTokens; ++j) {
+	          int tok = feature.get(j);
+	          int index = tok * config.numTokens + j;
+	          if (preMap.containsKey(index)) {
+	            int id = preMap.get(index);
+	            for (int nodeIndex : ls)
+	              gradSaved[id][nodeIndex] += gradHidden[nodeIndex];
+	          } else {
+	            for (int nodeIndex : ls) {
+	              for (int k = 0; k < config.embeddingSize; ++k) {
+	                gradW1[nodeIndex][offset + k] += gradHidden[nodeIndex] * E[tok][k];
+	                gradE[tok][k] += gradHidden[nodeIndex] * W1[nodeIndex][offset + k];
+	              }
+	            }
+	          }
+	          offset += config.embeddingSize;
+	        }
+	      }
+
+	      return new Cost(cost, correct, gradW1, gradb1, gradW2, gradLabelLayer, gradE);
+	    }
+
+	    /**
+	     * Return a new threadsafe instance.
+	     */
+	    @Override
+	    public ThreadsafeProcessor<Pair<Collection<Example>, FeedforwardParams>, Cost> newInstance() {
+	      return new GreedyCostFunction();
+	    }
+	  }
+
+
+  private class GlobalCostFunction implements ThreadsafeProcessor<Pair<Collection<GlobalExample>, FeedforwardParams>, Cost> {
 
     private double[][] gradW1;
     private double[] gradb1;
@@ -194,214 +399,215 @@ public class Classifier {
 
     @Override
     public Cost process(Pair<Collection<GlobalExample>, FeedforwardParams> input) {
-      Collection<GlobalExample> examples = input.first();
-      FeedforwardParams params = input.second();
-
-      gradW1 = new double[W1.length][W1[0].length];
-      gradb1 = new double[b1.length];
-      gradW2 = new double[W2.length][W2[0].length];
-      gradE = new double[E.length][E[0].length];
-      double cost = 0.0;
-      double correct = 0.0;
-
-      for (GlobalExample ex : examples) {
-    	  
-    	  CoreMap sentence = ex.sent;
-    	  List<Integer>goldActs = ex.acts;
-    	  
-    	  /*
-    	   *   Begin to decode!
-    	   */
-    	  int nBeam = config.nBeam;
-    	  int nSentSize = sentence.get(CoreAnnotations.TokensAnnotation.class).size();
-    	  int nRound = nSentSize * 2;
-    	  int nActNum = system.transitions.size();
-    	  boolean updateEarly = false; //whether this example execute early update
-    	  ThreadLocalRandom random = ThreadLocalRandom.current();
-    	 
-    	  
-    	  List<DepState> beam = new ArrayList<DepState>();
-    	  Configuration c = system.initialConfiguration(sentence);
-    	  DepState goldState = null;
-    	 // if(system.canApply(c, system.transitions.get(nActNum-1))){
-    	//	  system.apply(c, system.transitions.get(nActNum-1));
-    	 // }
-    	 // else{
-    	//	  throw new RuntimeException("The first action is not SHIFT");
-    	  //}
-    	  
-    	  // only store the best beam candidates in decoding!
-    	  DepState initialState = new DepState(c, -1, 0.0);
-    	  beam.add(initialState) ;
-
-    	  // the lattice to store states to be sorted
-    	  List<DepState> lattice = new ArrayList<DepState>();
-        
-    	  // begin to do nRound-th action
-    	  for(int i = 0; i < nRound; i++){
-    		  
-//    		  System.err.println("round###################################");
-    		  
-    		  lattice.clear();
-    		  boolean beamGold = false;
-    		  int goldAct = goldActs.get(i);
-    		  
-    		  //begin to expand
-    		  for(int j=0; j<beam.size(); j++ ){
-    			  DepState beam_j = beam.get(j);
-    			  int[] dropOutArray = IntStream.range(0, config.hiddenSize)
-                          .filter(n -> random.nextDouble() > params.getDropOutProb())
-                          .toArray();
-    			  int[] featureArray = parser.getFeatureArray( beam_j.c );
-    			  double[] scores = computeScoresInTraining(featureArray, preMap, dropOutArray);
-    			  
-    			  // do softmax
-    			  //but in sentence level log-likelihood, we do not do softmax in every step!
-    			  //so the softmax is only return the label array!
-    			  List<Integer> predictLabel = parser.softmax(scores, beam_j.c);
-    			  
-    			  beam_j.setLabel(predictLabel);
-    			  beam_j.setDropOutArray(dropOutArray);
-    			  beam_j.setFeatureArray(featureArray);
-    			  
-    			  // add all expanded candidates to lattice
-//    			  System.err.println(j+" lattice###################################");
-    			  for(int k = 0; k<nActNum; k++){
-    				  if( predictLabel.get(k) != -1 ){
-    					  DepState expandState = new DepState(beam_j.c, k , beam_j.score + scores[k], beam_j, 
-    							  beam_j.bGold && k==goldAct );
-    					  if(expandState.bGold)
-    						  goldState = expandState;
-    					  lattice.add(expandState);
-//    					  System.err.println(k+"# "+lattice.get(lattice.size()-1));
-    				  }
-    			  }
-    		  }
-    		  
-    		  // sort the lattice
-    		  Collections.sort(lattice);
-    		  
-    		  //add from lattice to beam
-    		  beam.clear();
-    		  for(int m = 0; m<(nBeam > lattice.size() ? lattice.size() : nBeam); m++){
-    			  beam.add(m, lattice.get(m));
-    			  beamGold = beamGold || lattice.get(m).bGold;
-    		  }
-    		  
-    		  // apply these states, lazy expand
-    		  for(DepState state : beam){
-    			  state.StateApply(system);
-    			  
-    			  //print for debug
-//    			  System.err.println(nRound+"\t"+beam_index++ +"\t"+state.toString());
-//    			  System.err.println(state.actionSequence());
-    		  }
-    		  
-    		  //early update
-    		  if(config.earlyUpdate){
-    			  if(!beamGold){
-    				  goldState.StateApply(system);
-    				  updateEarly = true;
-    				  break;
-    			  }
-    		  }
-    	  } //end nRound
-    	  
-    	  DepState predictState = beam.get(0);
-    	  List<Integer> predictActs = predictState.actionSequence();
-    	  
-    	  //get the first disagreement  of two action sequences
-//    	  int firstDisAgreePos = -1;
-//    	  for(int i = 0; i < predictActs.size(); i++){
-//    		  if(goldActs.get(i) != predictActs.get(i) ){
-//    			  firstDisAgreePos = i;
-//    			  break;
+//      Collection<GlobalExample> examples = input.first();
+//      FeedforwardParams params = input.second();
+//
+//      gradW1 = new double[W1.length][W1[0].length];
+//      gradb1 = new double[b1.length];
+//      gradW2 = new double[W2.length][W2[0].length];
+//      gradE = new double[E.length][E[0].length];
+//      double cost = 0.0;
+//      double correct = 0.0;
+//
+//      for (GlobalExample ex : examples) {
+//    	  
+//    	  CoreMap sentence = ex.sent;
+//    	  List<Integer>goldActs = ex.acts;
+//    	  
+//    	  /*
+//    	   *   Begin to decode!
+//    	   */
+//    	  int nBeam = config.nBeam;
+//    	  int nSentSize = sentence.get(CoreAnnotations.TokensAnnotation.class).size();
+//    	  int nRound = nSentSize * 2;
+//    	  int nActNum = system.transitions.size();
+//    	  boolean updateEarly = false; //whether this example execute early update
+//    	  ThreadLocalRandom random = ThreadLocalRandom.current();
+//    	 
+//    	  
+//    	  List<DepState> beam = new ArrayList<DepState>();
+//    	  Configuration c = system.initialConfiguration(sentence);
+//    	  DepState goldState = null;
+//    	 // if(system.canApply(c, system.transitions.get(nActNum-1))){
+//    	//	  system.apply(c, system.transitions.get(nActNum-1));
+//    	 // }
+//    	 // else{
+//    	//	  throw new RuntimeException("The first action is not SHIFT");
+//    	  //}
+//    	  
+//    	  // only store the best beam candidates in decoding!
+//    	  DepState initialState = new DepState(c, -1, 0.0);
+//    	  beam.add(initialState) ;
+//
+//    	  // the lattice to store states to be sorted
+//    	  List<DepState> lattice = new ArrayList<DepState>();
+//        
+//    	  // begin to do nRound-th action
+//    	  for(int i = 0; i < nRound; i++){
+//    		  
+////    		  System.err.println("round###################################");
+//    		  
+//    		  lattice.clear();
+//    		  boolean beamGold = false;
+//    		  int goldAct = goldActs.get(i);
+//    		  
+//    		  //begin to expand
+//    		  for(int j=0; j<beam.size(); j++ ){
+//    			  DepState beam_j = beam.get(j);
+//    			  int[] dropOutArray = IntStream.range(0, config.hiddenSize)
+//                          .filter(n -> random.nextDouble() > params.getDropOutProb())
+//                          .toArray();
+//    			  int[] featureArray = parser.getFeatureArray( beam_j.c );
+//    			  double[] scores = computeScoresInTraining(featureArray, preMap, dropOutArray);
+//    			  
+//    			  // do softmax
+//    			  //but in sentence level log-likelihood, we do not do softmax in every step!
+//    			  //so the softmax is only return the label array!
+//    			  List<Integer> predictLabel = parser.softmax(scores, beam_j.c);
+//    			  
+//    			  beam_j.setLabel(predictLabel);
+//    			  beam_j.setDropOutArray(dropOutArray);
+//    			  beam_j.setFeatureArray(featureArray);
+//    			  
+//    			  // add all expanded candidates to lattice
+////    			  System.err.println(j+" lattice###################################");
+//    			  for(int k = 0; k<nActNum; k++){
+//    				  if( predictLabel.get(k) != -1 ){
+//    					  DepState expandState = new DepState(beam_j.c, k , beam_j.score + scores[k], beam_j, 
+//    							  beam_j.bGold && k==goldAct );
+//    					  if(expandState.bGold)
+//    						  goldState = expandState;
+//    					  lattice.add(expandState);
+////    					  System.err.println(k+"# "+lattice.get(lattice.size()-1));
+//    				  }
+//    			  }
+//    		  }
+//    		  
+//    		  // sort the lattice
+//    		  Collections.sort(lattice);
+//    		  
+//    		  //add from lattice to beam
+//    		  beam.clear();
+//    		  for(int m = 0; m<(nBeam > lattice.size() ? lattice.size() : nBeam); m++){
+//    			  beam.add(m, lattice.get(m));
+//    			  beamGold = beamGold || lattice.get(m).bGold;
+//    		  }
+//    		  
+//    		  // apply these states, lazy expand
+//    		  for(DepState state : beam){
+//    			  state.StateApply(system);
+//    			  
+//    			  //print for debug
+////    			  System.err.println(nRound+"\t"+beam_index++ +"\t"+state.toString());
+////    			  System.err.println(state.actionSequence());
+//    		  }
+//    		  
+//    		  //early update
+//    		  if(config.earlyUpdate){
+//    			  if(!beamGold){
+//    				  goldState.StateApply(system);
+//    				  updateEarly = true;
+//    				  break;
+//    			  }
+//    		  }
+//    	  } //end nRound
+//    	  
+//    	  DepState predictState = beam.get(0);
+//    	  List<Integer> predictActs = predictState.actionSequence();
+//    	  
+//    	  //get the first disagreement  of two action sequences
+////    	  int firstDisAgreePos = -1;
+////    	  for(int i = 0; i < predictActs.size(); i++){
+////    		  if(goldActs.get(i) != predictActs.get(i) ){
+////    			  firstDisAgreePos = i;
+////    			  break;
+////    		  }
+////    	  }
+//    	  
+//    	  correct += ((double)predictActs.size()/nSentSize/params.batchSize)/2;
+//    	  
+//    	  /*
+//    	   *   if two actions sequence is the same, do not update!
+//    	   *   #TODO but we could choose max-margin loss, and always update!
+//    	   */
+////    	  if(firstDisAgreePos == -1)
+////    		  continue;
+//    	  
+//    	  /*
+//    	   *   print action sequence
+//    	   */
+////    	  System.err.println("gold action sequence: "+goldActs);
+////    	  System.err.println("predict action sequence: "+predictActs);
+//
+//    	  /*
+//    	   *   Begin to train!
+//    	   */
+//    	  
+//    	  //softmax the whole beam candidates!
+//    	  
+//    	  
+//    	  // the parameter for training
+//		  if(updateEarly)
+//			  beam.add(goldState);
+//		  
+//		  if(!config.bAggressiveUpdate && !updateEarly){
+//			  if(beam.get(0).bGold)
+//				  continue;  //skip update if predict right!
+//		  }
+//		  
+//		  nBeam = beam.size();
+//		  double[] predictupdatePara = new double[nBeam];
+//		  
+//		  double maxVal = beam.get(0).score;  //get the max score
+//		  double sum =0;
+//		  for(int b_j = 0; b_j<nBeam; b_j++){
+//			  predictupdatePara[b_j] = Math.exp(beam.get(b_j).score - maxVal);
+//			  sum += predictupdatePara[b_j]; 
+//		  }
+//		  
+//		  double[] para_unnorm = Arrays.copyOf(predictupdatePara, predictupdatePara.length);
+//		  
+//
+//		  //set the gradients of each beam candidate
+//		  for(int b_j = 0; b_j<nBeam; b_j++){
+//			  
+//			  int t = beam.get(b_j).bGold ? 1 : 0;
+//			  predictupdatePara[b_j] =  predictupdatePara[b_j] / sum;
+//			  if(predictupdatePara[b_j] <= 0.5)
+//				  predictupdatePara[b_j]  = predictupdatePara[b_j]  - t;
+//			  else
+//				  predictupdatePara[b_j] = (1 - t) - (sum - para_unnorm[b_j])/sum;
+//				
+//		  }
+//    		  
+//		  // update parameters
+//    		  /*
+//    		   *   training k-best candidates in the beam
+//    		   */
+//    		  for(int k = 0; k<nBeam; k++){
+//    			  DepState beamState = beam.get(k);
+//    			  
+//    			  for(int i = 0; i<predictActs.size(); i++){
+//    			  
+//    				  //get right predict label
+//    				  if(beamState.act == -1)
+//    					  throw new RuntimeException("The action of current state is -1, the initial state!");
+//    				  
+//    				  List<Integer> label = beamState.lastState.labels;
+//    				  label.set(beamState.act, 1);
+//    				  //update predict
+//    				  trainFeatures(params, beamState.lastState.featureArray, label, 
+//    						  false, predictupdatePara[k], beamState.lastState.dropOutArray);
+//    				  //set the label back for next use!
+//    				  label.set(beamState.act, 0);
+//    				  beamState = beamState.lastState;
 //    		  }
 //    	  }
-    	  
-    	  correct += ((double)predictActs.size()/nSentSize/params.batchSize)/2;
-    	  
-    	  /*
-    	   *   if two actions sequence is the same, do not update!
-    	   *   #TODO but we could choose max-margin loss, and always update!
-    	   */
-//    	  if(firstDisAgreePos == -1)
-//    		  continue;
-    	  
-    	  /*
-    	   *   print action sequence
-    	   */
-//    	  System.err.println("gold action sequence: "+goldActs);
-//    	  System.err.println("predict action sequence: "+predictActs);
+//        
+//      }	//end foreach examples
 
-    	  /*
-    	   *   Begin to train!
-    	   */
-    	  
-    	  //softmax the whole beam candidates!
-    	  
-    	  
-    	  // the parameter for training
-		  if(updateEarly)
-			  beam.add(goldState);
-		  
-		  if(!config.bAggressiveUpdate && !updateEarly){
-			  if(beam.get(0).bGold)
-				  continue;  //skip update if predict right!
-		  }
-		  
-		  nBeam = beam.size();
-		  double[] predictupdatePara = new double[nBeam];
-		  
-		  double maxVal = beam.get(0).score;  //get the max score
-		  double sum =0;
-		  for(int b_j = 0; b_j<nBeam; b_j++){
-			  predictupdatePara[b_j] = Math.exp(beam.get(b_j).score - maxVal);
-			  sum += predictupdatePara[b_j]; 
-		  }
-		  
-		  double[] para_unnorm = Arrays.copyOf(predictupdatePara, predictupdatePara.length);
-		  
-
-		  //set the gradients of each beam candidate
-		  for(int b_j = 0; b_j<nBeam; b_j++){
-			  
-			  int t = beam.get(b_j).bGold ? 1 : 0;
-			  predictupdatePara[b_j] =  predictupdatePara[b_j] / sum;
-			  if(predictupdatePara[b_j] <= 0.5)
-				  predictupdatePara[b_j]  = predictupdatePara[b_j]  - t;
-			  else
-				  predictupdatePara[b_j] = (1 - t) - (sum - para_unnorm[b_j])/sum;
-				
-		  }
-    		  
-		  // update parameters
-    		  /*
-    		   *   training k-best candidates in the beam
-    		   */
-    		  for(int k = 0; k<nBeam; k++){
-    			  DepState beamState = beam.get(k);
-    			  
-    			  for(int i = 0; i<predictActs.size(); i++){
-    			  
-    				  //get right predict label
-    				  if(beamState.act == -1)
-    					  throw new RuntimeException("The action of current state is -1, the initial state!");
-    				  
-    				  List<Integer> label = beamState.lastState.labels;
-    				  label.set(beamState.act, 1);
-    				  //update predict
-    				  trainFeatures(params, beamState.lastState.featureArray, label, 
-    						  false, predictupdatePara[k], beamState.lastState.dropOutArray);
-    				  //set the label back for next use!
-    				  label.set(beamState.act, 0);
-    				  beamState = beamState.lastState;
-    		  }
-    	  }
-        
-      }	//end foreach examples
-
-      return new Cost(cost, correct, gradW1, gradb1, gradW2, gradE);
+//      return new Cost(cost, correct, gradW1, gradb1, gradW2, gradE);
+      return null;
     }
     
     /**
@@ -410,106 +616,106 @@ public class Classifier {
      * @param feature
      * @param bGold
      */
-    public void trainFeatures( FeedforwardParams params, int[] feature, List<Integer> label, 
-    		boolean bGold, double expDecay, int[] dropOutArray){
-    	
-    	double[] scores = new double[numLabels];
-        double[] hidden = new double[config.hiddenSize];
-        double[] hidden3 = new double[config.hiddenSize];
-        
-        // We can't fix the seed used with ThreadLocalRandom
-        // TODO: Is this a serious problem?
-
-        // Run dropout: randomly drop some hidden-layer units. `ls`
-        // contains the indices of those units which are still active
-        int[] ls = dropOutArray;
-
-        int offset = 0;
-        for (int j = 0; j < config.numTokens; ++j) {
-          int tok = feature[j];
-          int index = tok * config.numTokens + j;
-
-          if (preMap.containsKey(index)) {
-            // Unit activations for this input feature value have been
-            // precomputed
-            int id = preMap.get(index);
-
-            // Only extract activations for those nodes which are still
-            // activated (`ls`)
-            for (int nodeIndex : ls)
-              hidden[nodeIndex] += saved[id][nodeIndex];
-          } else {
-            for (int nodeIndex : ls) {
-              for (int k = 0; k < config.embeddingSize; ++k)
-                hidden[nodeIndex] += W1[nodeIndex][offset + k] * E[tok][k];
-            }
-          }
-          offset += config.embeddingSize;
-        }
-
-        // Add bias term and apply activation function
-        for (int nodeIndex : ls) {
-          hidden[nodeIndex] += b1[nodeIndex];
-          hidden3[nodeIndex] = Math.pow(hidden[nodeIndex], 3);
-        }
-
-        // Feed forward to softmax layer (no activation yet)
-        for (int i = 0; i < numLabels; ++i) {
-          if (label.get(i) >= 0) {
-            for (int nodeIndex : ls)
-              scores[i] += W2[i][nodeIndex] * hidden3[nodeIndex];
-          }
-        }
-        
-        /*
-         *   get the error array!
-         */
-        double[] gradHidden3 = new double[config.hiddenSize];
-        for (int i = 0; i < numLabels; ++i)
-          if (label.get(i) == 1) {
-        	  
-        	  double delta =  expDecay / params.getBatchSize(); 
-        	  //cross entropy loss
-            for (int nodeIndex : ls) {
-              gradW2[i][nodeIndex] += delta * hidden3[nodeIndex];
-              gradHidden3[nodeIndex] += delta * W2[i][nodeIndex];
-            }
-          }
-          
-
-        double[] gradHidden = new double[config.hiddenSize];
-        for (int nodeIndex : ls) {
-          gradHidden[nodeIndex] = gradHidden3[nodeIndex] * 3 * hidden[nodeIndex] * hidden[nodeIndex];
-          gradb1[nodeIndex] += gradHidden3[nodeIndex];
-        }
-
-        offset = 0;
-        for (int j = 0; j < config.numTokens; ++j) {
-          int tok = feature[j];
-          int index = tok * config.numTokens + j;
-          if (preMap.containsKey(index)) {
-            int id = preMap.get(index);
-            for (int nodeIndex : ls){
-              gradSaved[id][nodeIndex] += gradHidden[nodeIndex];
-            }
-          } else {
-            for (int nodeIndex : ls) {
-              for (int k = 0; k < config.embeddingSize; ++k) {
-            	  gradW1[nodeIndex][offset + k] += gradHidden[nodeIndex] * E[tok][k];
-                  gradE[tok][k] += gradHidden[nodeIndex] * W1[nodeIndex][offset + k];
-              }
-            }
-          }
-          offset += config.embeddingSize;
-        }
-    }
+//    public void trainFeatures( FeedforwardParams params, int[] feature, List<Integer> label, 
+//    		boolean bGold, double expDecay, int[] dropOutArray){
+//    	
+//    	double[] scores = new double[numLabels];
+//        double[] hidden = new double[config.hiddenSize];
+//        double[] hidden3 = new double[config.hiddenSize];
+//        
+//        // We can't fix the seed used with ThreadLocalRandom
+//        // TODO: Is this a serious problem?
+//
+//        // Run dropout: randomly drop some hidden-layer units. `ls`
+//        // contains the indices of those units which are still active
+//        int[] ls = dropOutArray;
+//
+//        int offset = 0;
+//        for (int j = 0; j < config.numTokens; ++j) {
+//          int tok = feature[j];
+//          int index = tok * config.numTokens + j;
+//
+//          if (preMap.containsKey(index)) {
+//            // Unit activations for this input feature value have been
+//            // precomputed
+//            int id = preMap.get(index);
+//
+//            // Only extract activations for those nodes which are still
+//            // activated (`ls`)
+//            for (int nodeIndex : ls)
+//              hidden[nodeIndex] += saved[id][nodeIndex];
+//          } else {
+//            for (int nodeIndex : ls) {
+//              for (int k = 0; k < config.embeddingSize; ++k)
+//                hidden[nodeIndex] += W1[nodeIndex][offset + k] * E[tok][k];
+//            }
+//          }
+//          offset += config.embeddingSize;
+//        }
+//
+//        // Add bias term and apply activation function
+//        for (int nodeIndex : ls) {
+//          hidden[nodeIndex] += b1[nodeIndex];
+//          hidden3[nodeIndex] = Math.pow(hidden[nodeIndex], 3);
+//        }
+//
+//        // Feed forward to softmax layer (no activation yet)
+//        for (int i = 0; i < numLabels; ++i) {
+//          if (label.get(i) >= 0) {
+//            for (int nodeIndex : ls)
+//              scores[i] += W2[i][nodeIndex] * hidden3[nodeIndex];
+//          }
+//        }
+//        
+//        /*
+//         *   get the error array!
+//         */
+//        double[] gradHidden3 = new double[config.hiddenSize];
+//        for (int i = 0; i < numLabels; ++i)
+//          if (label.get(i) == 1) {
+//        	  
+//        	  double delta =  expDecay / params.getBatchSize(); 
+//        	  //cross entropy loss
+//            for (int nodeIndex : ls) {
+//              gradW2[i][nodeIndex] += delta * hidden3[nodeIndex];
+//              gradHidden3[nodeIndex] += delta * W2[i][nodeIndex];
+//            }
+//          }
+//          
+//
+//        double[] gradHidden = new double[config.hiddenSize];
+//        for (int nodeIndex : ls) {
+//          gradHidden[nodeIndex] = gradHidden3[nodeIndex] * 3 * hidden[nodeIndex] * hidden[nodeIndex];
+//          gradb1[nodeIndex] += gradHidden3[nodeIndex];
+//        }
+//
+//        offset = 0;
+//        for (int j = 0; j < config.numTokens; ++j) {
+//          int tok = feature[j];
+//          int index = tok * config.numTokens + j;
+//          if (preMap.containsKey(index)) {
+//            int id = preMap.get(index);
+//            for (int nodeIndex : ls){
+//              gradSaved[id][nodeIndex] += gradHidden[nodeIndex];
+//            }
+//          } else {
+//            for (int nodeIndex : ls) {
+//              for (int k = 0; k < config.embeddingSize; ++k) {
+//            	  gradW1[nodeIndex][offset + k] += gradHidden[nodeIndex] * E[tok][k];
+//                  gradE[tok][k] += gradHidden[nodeIndex] * W1[nodeIndex][offset + k];
+//              }
+//            }
+//          }
+//          offset += config.embeddingSize;
+//        }
+//    }
     
     /**
      * Return a new threadsafe instance.
      */
     @Override
     public ThreadsafeProcessor<Pair<Collection<GlobalExample>, FeedforwardParams>, Cost> newInstance() {
-      return new CostFunction();
+      return new GlobalCostFunction();
     }
   }
 
@@ -549,7 +755,7 @@ public class Classifier {
    * The members of this class represent weight deltas computed by
    * backpropagation.
    *
-   * @see Classifier.CostFunction
+   * @see Classifier.GlobalCostFunction
    */
   public class Cost {
 
@@ -563,25 +769,20 @@ public class Classifier {
     private double[] gradb1;
     private double[][] gradW2;
     private double[][] gradE;
+    private final double[][][] gradLabelLayer;
 
     private Cost(double cost, double percentCorrect, double[][] gradW1, double[] gradb1, double[][] gradW2,
-                 double[][] gradE) {
+    		double[][][] gradLabelLayer, double[][] gradE) {
       this.cost = cost;
       this.percentCorrect = percentCorrect;
 
       this.gradW1 = gradW1;
       this.gradb1 = gradb1;
       this.gradW2 = gradW2;
+      this.gradLabelLayer = gradLabelLayer;
       this.gradE = gradE;
     }
     
-    public void initGradients(){
-    	this.gradW1 = new double[W1.length][W1[0].length];
-	    gradb1 = new double[b1.length];
-	    gradW2 = new double[W2.length][W2[0].length];
-	    gradE = new double[E.length][E[0].length];
-    }
-
     /**
      * Merge the given {@code Cost} data with the data in this
      * instance.
@@ -596,6 +797,7 @@ public class Classifier {
       addInPlace(gradb1, otherCost.getGradb1());
       addInPlace(gradW2, otherCost.getGradW2());
       addInPlace(gradE, otherCost.getGradE());
+      addInPlace(gradLabelLayer, otherCost.gradLabelLayer);
     }
 
     /**
@@ -656,6 +858,16 @@ public class Classifier {
           gradE[i][j] += regularizationWeight * E[i][j];
         }
       }
+      
+      for(int i = 0; i < labelLayer.length; ++i){
+    	  if(i == system.shiftActTypeID)
+    		  continue;
+    	  for(int j = 0; j < labelLayer[0].length; ++j)
+    		  for(int k = 0; k < labelLayer[0][0].length; ++k){
+    			  cost += regularizationWeight * labelLayer[i][j][k] * labelLayer[i][j][k] / 2.0;
+    			  gradLabelLayer[i][j][k] += regularizationWeight * labelLayer[i][j][k];
+    		  }
+      }
     }
 
     public double getCost() {
@@ -681,6 +893,10 @@ public class Classifier {
     public double[][] getGradE() {
       return gradE;
     }
+    
+    public double[][][] getGradLabelLayer() {
+		return gradLabelLayer;
+	}
 
   }
 
@@ -726,258 +942,53 @@ public class Classifier {
    *         weights, and includes gradients to be used for further
    *         training
    */
-  public Cost computeCostFunction(int batchSize, double regParameter, double dropOutProb) {
+  public Cost computeGreedyCostFunction(int batchSize, double regParameter, double dropOutProb) {
     validateTraining();
 
-//    List<Example> examples = Util.getRandomSubList(dataset.examples, batchSize);
-//
-//    // Redo precomputations for only those features which are triggered
-//    // by examples in this mini-batch.
-//    Set<Integer> toPreCompute = getToPreCompute(examples);
-//    preCompute(toPreCompute);
-//
-//    // Set up parameters for feedforward
-//    FeedforwardParams params = new FeedforwardParams(batchSize, dropOutProb);
-//
-//    // Zero out saved-embedding gradients
-//    gradSaved = new double[preMap.size()][config.hiddenSize];
-//
-//    int numChunks = config.trainingThreads;
-//    List<Collection<Example>> chunks = CollectionUtils.partitionIntoFolds(examples, numChunks);
-//
-//    // Submit chunks for processing on separate threads
-//    for (Collection<Example> chunk : chunks)
-//      jobHandler.put(new Pair<>(chunk, params));
-//    jobHandler.join(false);
-//
-//    // Join costs from each chunk
-//    Cost cost = null;
-//    while (jobHandler.peek()) {
-//      Cost otherCost = jobHandler.poll();
-//
-//      if (cost == null)
-//        cost = otherCost;
-//      else
-//        cost.merge(otherCost);
-//    }
-//
-//    if (cost == null)
-//      return null;
-//
-//    // Backpropagate gradients on saved pre-computed values to actual
-//    // embeddings
-//    cost.backpropSaved(toPreCompute);
-//
-//    cost.addL2Regularization(regParameter);
-//
-//    return cost;
-    return null;  //for quick program, I anotate all these codes in this function
+    List<Example> examples = Util.getRandomSubList(dataset.examples, batchSize);
+
+    // Redo precomputations for only those features which are triggered
+    // by examples in this mini-batch.
+    Set<Integer> toPreCompute = getToPreCompute(examples);
+    preCompute(toPreCompute);
+
+    // Set up parameters for feedforward
+    FeedforwardParams params = new FeedforwardParams(batchSize, dropOutProb);
+
+    // Zero out saved-embedding gradients
+    gradSaved = new double[preMap.size()][config.hiddenSize];
+
+    int numChunks = config.trainingThreads;
+    List<Collection<Example>> chunks = CollectionUtils.partitionIntoFolds(examples, numChunks);
+
+    // Submit chunks for processing on separate threads
+    for (Collection<Example> chunk : chunks)
+      greedyJobHandler.put(new Pair<>(chunk, params));
+    greedyJobHandler.join(false);
+
+    // Join costs from each chunk
+    Cost cost = null;
+    while (greedyJobHandler.peek()) {
+      Cost otherCost = greedyJobHandler.poll();
+
+      if (cost == null)
+        cost = otherCost;
+      else
+        cost.merge(otherCost);
+    }
+
+    if (cost == null)
+      return null;
+
+    // Backpropagate gradients on saved pre-computed values to actual
+    // embeddings
+    cost.backpropSaved(toPreCompute);
+
+    cost.addL2Regularization(regParameter);
+
+    return cost;
   }
-  
-  /**
-   *   feedforward and update the parameter of other batch directly like in 
-   *   {@link @link edu.stanford.nlp.parser.nndep.Classifier.Cost.computeCostFunction()}
-   *   
-   *   it is something like a SGD learning but with a small batch! After update batch gradients,
-   *   We just make the update immediately after the decoding.
-   *   
-   *   NOTE: with SGD, the precomputed must be false when training!
-   */
-  public void computeCostFunctionAndUpdate(int batchSize, double regParameter, double dropOutProb, 
-		  double adaAlpha, double adaEps){
-	  
-	  List<Example> examples = dataset.examples;
-	  //List<Example> examples = Util.getRandomSubList(dataset.examples, batchSize);
 
-	    // Set up parameters for feedforward
-	    FeedforwardParams params = new FeedforwardParams(batchSize, dropOutProb);
-
-	    int numChunks = config.trainingThreads;
-	    List<Collection<Example>> chunks = CollectionUtils.partitionIntoFolds(examples, numChunks);
-
-	    /*
-	     *   Construct a Cost object for object reuse in our function.
-	     *   Because I need a Cost object in every time calling FeedForwardAndBP
-	     * 
-	     */
-	    double[][]  gradW1 = new double[W1.length][W1[0].length];
-	    double[]   gradb1 = new double[b1.length];
-	    double[][]   gradW2 = new double[W2.length][W2[0].length];
-	    double[][]   gradE = new double[E.length][E[0].length];
-	    Cost cost = new Cost(0, 0, gradW1, gradb1, gradW2, gradE);
-	    
-	    // Submit chunks for processing on separate threads
-	    for (Collection<Example> chunk : chunks)
-	      FeedForwardAndBP(cost, chunk, batchSize, dropOutProb, regParameter, adaAlpha, adaEps);
-
-  }
-  
-/**
- *   Feedforward weights and update them immediately
- * 
- * @param batchSize
- * @param dropOutProb
- * @param regParameter
- * @param adaAlpha
- * @param adaEps
- */
-  private void FeedForwardAndBP(Cost retval,Collection<Example> examples, int batchSize, double dropOutProb,
-		double regParameter, double adaAlpha, double adaEps) {
-
-	  /*
-	   *   Feedforward weights
-	   */
-
-      // We can't fix the seed used with ThreadLocalRandom
-      // TODO: Is this a serious problem?
-      ThreadLocalRandom random = ThreadLocalRandom.current();
-      
-      retval.initGradients();
-
-      double[][] gradW1 = retval.gradW1;
-      double[] gradb1 = retval.gradb1;
-      double[][] gradW2 = retval.gradW2;
-      double[][] gradE = retval.gradE;
-
-      double cost = 0.0;
-      double correct = 0.0;
-
-      int insnum = 0;
-      System.err.println("example num:" + examples.size()); 
-      for (Example ex : examples) {
-        List<Integer> feature = ex.getFeature();
-        List<Integer> label = ex.getLabel();
-        
-        if( (insnum++)%1000== 0){
-        	System.err.println("example:" + insnum);        	
-        }
-
-        double[] scores = new double[numLabels];
-        double[] hidden = new double[config.hiddenSize];
-        double[] hidden3 = new double[config.hiddenSize];
-
-        // Run dropout: randomly drop some hidden-layer units. `ls`
-        // contains the indices of those units which are still active
-        int[] ls = IntStream.range(0, config.hiddenSize)
-                            .filter(n -> random.nextDouble() > dropOutProb)
-                            .toArray();
-
-        int offset = 0;
-        for (int j = 0; j < config.numTokens; ++j) {
-          int tok = feature.get(j);
-
-           for (int nodeIndex : ls) {
-              for (int k = 0; k < config.embeddingSize; ++k)
-                hidden[nodeIndex] += W1[nodeIndex][offset + k] * E[tok][k];
-            }
-          
-          offset += config.embeddingSize;
-        }
-
-        // Add bias term and apply activation function
-        for (int nodeIndex : ls) {
-          hidden[nodeIndex] += b1[nodeIndex];
-          hidden3[nodeIndex] = Math.pow(hidden[nodeIndex], 3);
-        }
-
-        // Feed forward to softmax layer (no activation yet)
-        int optLabel = -1;
-        for (int i = 0; i < numLabels; ++i) {
-          if (label.get(i) >= 0) {
-            for (int nodeIndex : ls)
-              scores[i] += W2[i][nodeIndex] * hidden3[nodeIndex];
-
-            if (optLabel < 0 || scores[i] > scores[optLabel])
-              optLabel = i;
-          }
-        }
-
-        /*
-         *   Get the best label!
-         */
-        double sum1 = 0.0;	//sum of scores of action label == 1, in our task, only one action score will be 1, Maybe #TODO 
-        double sum2 = 0.0;	//sum of scores of all actions after softmax  
-        double maxScore = scores[optLabel];
-        for (int i = 0; i < numLabels; ++i) {
-          if (label.get(i) >= 0) {
-        	  
-        	  /*
-        	   *   #MODIFY 
-        	   *   I remove the softmax of output layer
-        	   * 
-        	   */
-           // scores[i] = Math.exp(scores[i] - maxScore);
-            if (label.get(i) == 1) sum1 += scores[i];
-            sum2 += scores[i];
-          }
-        }
-
-        cost += (Math.log(sum2) - Math.log(sum1)) / batchSize;
-        if (label.get(optLabel) == 1){
-        	correct += +1.0 / batchSize;
-        	
-        	/*
-        	 *   #MODIFY
-        	 *   I make the code directly return if the prediction is right!
-        	 * 
-        	 */
-        	continue;    //if right? Directly return!
-        	//return new Cost(cost, correct, gradW1, gradb1, gradW2, gradE);        	
-        }
-
-        /*
-         *   Begin to back propagation errors!
-         *   In SGD, we do the regularization in the bp errors process!
-         */
-        /*
-         *   #MODIFY
-         *   I change the code with margin loss and only update the weight 
-         *   of output neurons which is golden or mis-predicted label, other
-         *   than all neurons in output layer. 
-         * 
-         */
-        double[] gradHidden3 = new double[config.hiddenSize];
-        for (int i = 0; i < numLabels; ++i)
-          if (label.get(i) >= 0) {
-        	  double delta;
-        	 if(i == optLabel) delta= 1.0;
-        	 else if( label.get(i) == 1) delta=-1.0;
-        	 else continue;
-            //double delta = -(label.get(i) - scores[i] / sum2) / batchSize;
-            for (int nodeIndex : ls) {
-              gradW2[i][nodeIndex] += delta * hidden3[nodeIndex] + regParameter * W2[i][nodeIndex];
-              gradHidden3[nodeIndex] += delta * W2[i][nodeIndex];
-            }
-          }
-
-        double[] gradHidden = new double[config.hiddenSize];
-        for (int nodeIndex : ls) {
-          gradHidden[nodeIndex] = gradHidden3[nodeIndex] * 3 * hidden[nodeIndex] * hidden[nodeIndex];
-          gradb1[nodeIndex] += gradHidden3[nodeIndex] + regParameter * b1[nodeIndex];
-        }
-
-        offset = 0;
-        for (int j = 0; j < config.numTokens; ++j) {
-          int tok = feature.get(j);
-  
-            for (int nodeIndex : ls) {
-              for (int k = 0; k < config.embeddingSize; ++k) {
-                gradW1[nodeIndex][offset + k] += gradHidden[nodeIndex] * E[tok][k];
-                gradE[tok][k] += gradHidden[nodeIndex] * W1[nodeIndex][offset + k] + regParameter * E[tok][k];
-              }
-            }
-          
-          offset += config.embeddingSize;
-        }
-        
-        /*
-         *   Begin to update error!
-         */
-        takeAdaGradientStep(retval, adaAlpha, adaEps);
-      }
-      
-      System.err.println("correct: "+correct/examples.size());
-}
 
 /**
    * Update classifier weights using the given training cost
@@ -995,6 +1006,7 @@ public class Classifier {
     double[][] gradW1 = cost.getGradW1(), gradW2 = cost.getGradW2(),
         gradE = cost.getGradE();
     double[] gradb1 = cost.getGradb1();
+    double[][][] gradLabelLayer = cost.getGradLabelLayer();
     
     
 
@@ -1027,6 +1039,18 @@ public class Classifier {
         E[i][j] -= adaAlpha * gradE[i][j] / Math.sqrt(eg2E[i][j] + adaEps);
       }
     }
+    
+    for(int i = 0; i < labelLayer.length; ++i){
+    	if(i == system.shiftActTypeID)
+  		  continue;
+  	  for(int j = 0; j < labelLayer[0].length; ++j)
+  		  for(int k = 0; k < labelLayer[0][0].length; ++k){
+  			  eg2LabelLayer[i][j][k] += gradLabelLayer[i][j][k] * gradLabelLayer[i][j][k];
+  			  labelLayer[i][j][k] -=  adaAlpha * gradLabelLayer[i][j][k] / Math.sqrt(eg2LabelLayer[i][j][k] + adaEps);
+  		  }
+//  	  break;
+    }
+    
   }
 
   private void initGradientHistories() {
@@ -1034,6 +1058,7 @@ public class Classifier {
     eg2W1 = new double[W1.length][W1[0].length];
     eg2b1 = new double[b1.length];
     eg2W2 = new double[W2.length][W2[0].length];
+    eg2LabelLayer = new double[labelLayer.length][labelLayer[0].length][labelLayer[0][0].length];
   }
 
   /**
@@ -1058,7 +1083,10 @@ public class Classifier {
     validateTraining();
 
     // Destroy threadpool
-    jobHandler.join(true);
+    if(config.globalTraining)
+    	structJobHandler.join(true);
+    else
+    	greedyJobHandler.join(true);
 
     isTraining = false;
   }
@@ -1105,9 +1133,82 @@ public class Classifier {
         .currentTimeMillis() - startTime) / 1000.0 + " (s)");
   }
 
-  double[] computeScores(int[] feature) {
-    return computeScores(feature, preMap);
-  }
+//  Pair<Integer, Integer> computeHierarchicalScore(int[] feature, Configuration c){
+//	  return computeHierarchicalScore(feature, preMap, c);
+//  }
+
+  public Pair<Integer, Integer> computeHierarchicalScore(int[] feature, Configuration c) {
+	  
+	  int[] actTypeLabel = system.getValidActType(c);
+
+	  double[] hidden = new double[config.hiddenSize];
+	    int offset = 0;
+	    for (int j = 0; j < feature.length; ++j) {
+	      int tok = feature[j];
+	      int index = tok * config.numTokens + j;
+
+	      if (preMap.containsKey(index)) {
+	        int id = preMap.get(index);
+	        for (int i = 0; i < config.hiddenSize; ++i)
+	          hidden[i] += saved[id][i];
+	      } else {
+	        for (int i = 0; i < config.hiddenSize; ++i)
+	          for (int k = 0; k < config.embeddingSize; ++k)
+	            hidden[i] += W1[i][offset + k] * E[tok][k];
+	      }
+	      offset += config.embeddingSize;
+	    }
+
+	    for (int i = 0; i < config.hiddenSize; ++i) {
+	      hidden[i] += b1[i];
+	      hidden[i] = hidden[i] * hidden[i] * hidden[i];  // cube nonlinearity
+	    }
+	    
+	    double[] actTypeScores = new double[numActType];
+	    int optActType = -1;
+	    double optActTypeScore = Double.NEGATIVE_INFINITY; 
+	    for (int i = 0; i < numActType; ++i){
+	      
+	    	if(actTypeLabel[i] == -1)
+	    		continue;
+	    	for (int j = 0; j < config.hiddenSize; ++j)
+	    		actTypeScores[i] += W2[i][j] * hidden[j];
+	   
+	    	if(actTypeScores[i] >= optActTypeScore){
+	    		optActTypeScore = actTypeScores[i];
+	    		optActType = i;
+	    	}
+	    }
+	    
+	    int[] depTypeLabel = system.getValidLabelGivenActType(c, optActType);
+	  /*
+	   * for dep labels
+       */
+	  double[] depTypeScores = new double[numDepLabel];
+	  int optDepType = -1;
+	 
+	  if(optActType != system.shiftActTypeID){
+		  double optDepTypeScore = Double.NEGATIVE_INFINITY; 
+		  for (int i = 0; i < numDepLabel; ++i){
+			  
+			  if(depTypeLabel[i] == -1)
+				  continue;
+			  for (int j = 0; j < config.hiddenSize; ++j)
+				  depTypeScores[i] += labelLayer[optActType][i][j] * hidden[j];        // change the index//////////////////////
+			  
+			  if(depTypeScores[i] >= optDepTypeScore){
+				  optDepTypeScore = depTypeScores[i];
+				  optDepType = i;
+			  }
+		  }
+	  }
+	  
+	  return new Pair<Integer, Integer>(optActType, optDepType);
+}
+  
+//  double[] computeScores(int[] feature) {
+//    return computeScores(feature, preMap);
+//  }
   
   /**
    *   ComputerScoresInTraining
@@ -1118,83 +1219,83 @@ public class Classifier {
    *   The drop out array will be used in update parameters!
    *   
    */
-  private double[] computeScoresInTraining(int[] feature, Map<Integer, Integer> preMap, 
-		  int[] dropOutArray){
-	  
-	  int[] ls = dropOutArray;
-	  double[] hidden = new double[config.hiddenSize];
-	  int offset = 0;
-      for (int j = 0; j < config.numTokens; ++j) {
-        int tok = feature[j];
-        int index = tok * config.numTokens + j;
-
-        if (preMap.containsKey(index)) {
-          int id = preMap.get(index);
-
-          // Only extract activations for those nodes which are still
-          // activated (`ls`)
-          for (int nodeIndex : ls)
-            hidden[nodeIndex] += saved[id][nodeIndex];
-        } else {
-          for (int nodeIndex : ls) {
-            for (int k = 0; k < config.embeddingSize; ++k)
-              hidden[nodeIndex] += W1[nodeIndex][offset + k] * E[tok][k];
-          }
-        }
-        offset += config.embeddingSize;
-      }
-
-      // Add bias term and apply activation function
-      for (int nodeIndex : ls) {
-        hidden[nodeIndex] += b1[nodeIndex];
-        hidden[nodeIndex] = hidden[nodeIndex] * hidden[nodeIndex] * hidden[nodeIndex];  // cube nonlinearity
-      }
-
-      // Feed forward to softmax layer (no activation yet)
-      double[] scores = new double[numLabels];
-      for (int i = 0; i < numLabels; ++i) {
-          for (int nodeIndex : ls)
-            scores[i] += W2[i][nodeIndex] * hidden[nodeIndex];
-      }
-      
-      return scores;
-  }
+//  private double[] computeScoresInTraining(int[] feature, Map<Integer, Integer> preMap, 
+//		  int[] dropOutArray){
+//	  
+//	  int[] ls = dropOutArray;
+//	  double[] hidden = new double[config.hiddenSize];
+//	  int offset = 0;
+//      for (int j = 0; j < config.numTokens; ++j) {
+//        int tok = feature[j];
+//        int index = tok * config.numTokens + j;
+//
+//        if (preMap.containsKey(index)) {
+//          int id = preMap.get(index);
+//
+//          // Only extract activations for those nodes which are still
+//          // activated (`ls`)
+//          for (int nodeIndex : ls)
+//            hidden[nodeIndex] += saved[id][nodeIndex];
+//        } else {
+//          for (int nodeIndex : ls) {
+//            for (int k = 0; k < config.embeddingSize; ++k)
+//              hidden[nodeIndex] += W1[nodeIndex][offset + k] * E[tok][k];
+//          }
+//        }
+//        offset += config.embeddingSize;
+//      }
+//
+//      // Add bias term and apply activation function
+//      for (int nodeIndex : ls) {
+//        hidden[nodeIndex] += b1[nodeIndex];
+//        hidden[nodeIndex] = hidden[nodeIndex] * hidden[nodeIndex] * hidden[nodeIndex];  // cube nonlinearity
+//      }
+//
+//      // Feed forward to softmax layer (no activation yet)
+//      double[] scores = new double[numLabels];
+//      for (int i = 0; i < numLabels; ++i) {
+//          for (int nodeIndex : ls)
+//            scores[i] += W2[i][nodeIndex] * hidden[nodeIndex];
+//      }
+//      
+//      return scores;
+//  }
 
   /**
    * Feed a feature vector forward through the network. Returns the
    * values of the output layer.
    */
-  private double[] computeScores(int[] feature, Map<Integer, Integer> preMap) {
-    double[] hidden = new double[config.hiddenSize];
-    int offset = 0;
-    for (int j = 0; j < feature.length; ++j) {
-      int tok = feature[j];
-      int index = tok * config.numTokens + j;
-
-      if (preMap.containsKey(index)) {
-        int id = preMap.get(index);
-        for (int i = 0; i < config.hiddenSize; ++i)
-          hidden[i] += saved[id][i];
-      } else {
-        for (int i = 0; i < config.hiddenSize; ++i)
-          for (int k = 0; k < config.embeddingSize; ++k)
-            hidden[i] += W1[i][offset + k] * E[tok][k];
-      }
-      offset += config.embeddingSize;
-    }
-
-    for (int i = 0; i < config.hiddenSize; ++i) {
-      hidden[i] += b1[i];
-      hidden[i] = hidden[i] * hidden[i] * hidden[i];  // cube nonlinearity
-    }
-
-    double[] scores = new double[numLabels];
-    for (int i = 0; i < numLabels; ++i)
-      for (int j = 0; j < config.hiddenSize; ++j)
-        scores[i] += W2[i][j] * hidden[j];
-    
-    return scores;
-  }
+//  private double[] computeScores(int[] feature, Map<Integer, Integer> preMap) {
+//    double[] hidden = new double[config.hiddenSize];
+//    int offset = 0;
+//    for (int j = 0; j < feature.length; ++j) {
+//      int tok = feature[j];
+//      int index = tok * config.numTokens + j;
+//
+//      if (preMap.containsKey(index)) {
+//        int id = preMap.get(index);
+//        for (int i = 0; i < config.hiddenSize; ++i)
+//          hidden[i] += saved[id][i];
+//      } else {
+//        for (int i = 0; i < config.hiddenSize; ++i)
+//          for (int k = 0; k < config.embeddingSize; ++k)
+//            hidden[i] += W1[i][offset + k] * E[tok][k];
+//      }
+//      offset += config.embeddingSize;
+//    }
+//
+//    for (int i = 0; i < config.hiddenSize; ++i) {
+//      hidden[i] += b1[i];
+//      hidden[i] = hidden[i] * hidden[i] * hidden[i];  // cube nonlinearity
+//    }
+//
+//    double[] scores = new double[numLabels];
+//    for (int i = 0; i < numLabels; ++i)
+//      for (int j = 0; j < config.hiddenSize; ++j)
+//        scores[i] += W2[i][j] * hidden[j];
+//    
+//    return scores;
+//  }
 
   public double[][] getW1() {
     return W1;
@@ -1210,6 +1311,11 @@ public class Classifier {
 
   public double[][] getE() {
     return E;
+  }
+  
+  public double[][][] getLabelLayer() {
+		
+		return labelLayer;
   }
 
   /**
@@ -1234,7 +1340,19 @@ public class Classifier {
     for (int i = 0; i < a1.length; i++)
       a1[i] += a2[i];
   }
-
+  
+  private static void addInPlace(double[][][] m1, double[][][] m2) {
+	    
+	  for (int i = 0; i < m1.length; i++){
+		  if(i == ParsingSystem.shiftActTypeID)
+			  continue;
+		  for (int j = 0; j < m1[0].length; j++)
+			  for(int k = 0; k > m1[0][0].length; k++)
+				  m1[i][j][k] += m2[i][j][k];
+		  
+//	      break;
+	  }
+  }
   /**
    *   Generate the training example globally and decoding with beam search
    * 
@@ -1247,65 +1365,65 @@ public class Classifier {
    * @param dropProb
    * @return
    */
-public Cost computeGlobalCostFunction(List<GlobalExample> globalExamples, int batchSize,
-		double regParameter, double dropOutProb, int nBeam, double dMargin) {
-	
-	   validateTraining();
+//public Cost computeGlobalCostFunction(List<GlobalExample> globalExamples, int batchSize,
+//		double regParameter, double dropOutProb, int nBeam, double dMargin) {
+//	
+//	   validateTraining();
+//
+//	   // note that the batch size here is how many sentences other than feature vector!
+//	    List<GlobalExample> gloExamples = Util.getRandomSubList(globalExamples, batchSize);
+//
+//	    //get the examples in the global examples
+//	    List<Example> examples = new ArrayList<Example>();
+//	    for(GlobalExample ge : gloExamples)
+//	    	examples.addAll(ge.getExamples());
+//	    
+//	    // Redo precomputations for only those features which are triggered
+//	    // by examples in this mini-batch.
+//	    Set<Integer> toPreCompute = getToPreCompute(examples);
+//	    preCompute(toPreCompute);
+//
+//	    // Set up parameters for feedforward
+//	    FeedforwardParams params = new FeedforwardParams(batchSize, dropOutProb);
+//
+//	    // Zero out saved-embedding gradients
+//	    gradSaved = new double[preMap.size()][config.hiddenSize];
+//
+//	    int numChunks = config.trainingThreads;
+//	    List<Collection<GlobalExample>> chunks = CollectionUtils.partitionIntoFolds(gloExamples, numChunks);
+//
+//	    // Submit chunks for processing on separate threads
+//	    for (Collection<GlobalExample> chunk : chunks)
+//	      jobHandler.put(new Pair<>(chunk, params));
+//	    jobHandler.join(false);
+//
+//	    // Join costs from each chunk
+//	    Cost cost = null;
+//	    while (jobHandler.peek()) {
+//	      Cost otherCost = jobHandler.poll();
+//
+//	      if (cost == null)
+//	        cost = otherCost;
+//	      else
+//	        cost.merge(otherCost);
+//	    }
+//
+//	    if (cost == null)
+//	      return null;
+//
+//	    // Backpropagate gradients on saved pre-computed values to actual
+//	    // embeddings
+//	    cost.backpropSaved(toPreCompute);
+//
+//	    cost.addL2Regularization(regParameter);
+//
+//	    return cost;
+//}
 
-	   // note that the batch size here is how many sentences other than feature vector!
-	    List<GlobalExample> gloExamples = Util.getRandomSubList(globalExamples, batchSize);
 
-	    //get the examples in the global examples
-	    List<Example> examples = new ArrayList<Example>();
-	    for(GlobalExample ge : gloExamples)
-	    	examples.addAll(ge.getExamples());
-	    
-	    // Redo precomputations for only those features which are triggered
-	    // by examples in this mini-batch.
-	    Set<Integer> toPreCompute = getToPreCompute(examples);
-	    preCompute(toPreCompute);
-
-	    // Set up parameters for feedforward
-	    FeedforwardParams params = new FeedforwardParams(batchSize, dropOutProb);
-
-	    // Zero out saved-embedding gradients
-	    gradSaved = new double[preMap.size()][config.hiddenSize];
-
-	    int numChunks = config.trainingThreads;
-	    List<Collection<GlobalExample>> chunks = CollectionUtils.partitionIntoFolds(gloExamples, numChunks);
-
-	    // Submit chunks for processing on separate threads
-	    for (Collection<GlobalExample> chunk : chunks)
-	      jobHandler.put(new Pair<>(chunk, params));
-	    jobHandler.join(false);
-
-	    // Join costs from each chunk
-	    Cost cost = null;
-	    while (jobHandler.peek()) {
-	      Cost otherCost = jobHandler.poll();
-
-	      if (cost == null)
-	        cost = otherCost;
-	      else
-	        cost.merge(otherCost);
-	    }
-
-	    if (cost == null)
-	      return null;
-
-	    // Backpropagate gradients on saved pre-computed values to actual
-	    // embeddings
-	    cost.backpropSaved(toPreCompute);
-
-	    cost.addL2Regularization(regParameter);
-
-	    return cost;
-}
-
-public void setPreMap(Map<Integer, Integer> preMap2) {
-
-	this.preMap = preMap2;
-}
-
+  public void setPreMap(Map<Integer, Integer> preMap2) {
+	  
+	  this.preMap = preMap2;
+  }
 
 }

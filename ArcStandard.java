@@ -3,8 +3,10 @@ package nndep;
 import edu.stanford.nlp.ling.CoreAnnotations;
 import edu.stanford.nlp.trees.TreebankLanguagePack;
 import edu.stanford.nlp.util.CoreMap;
+import edu.stanford.nlp.util.Pair;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 /**
@@ -29,15 +31,13 @@ public class ArcStandard extends ParsingSystem {
   public void makeTransitions() {
     transitions = new ArrayList<>();
 
-    // TODO store these as objects!
+    transitions.add("S");
+    for (String label : labels)
+        transitions.add("R(" + label + ")");
     for (String label : labels)
       transitions.add("L(" + label + ")");
-    for (String label : labels)
-      transitions.add("R(" + label + ")");
-
-    transitions.add("S");
   }
-
+  
   @Override
   public Configuration initialConfiguration(CoreMap s) {
     Configuration c = new Configuration(s);
@@ -79,6 +79,45 @@ public class ArcStandard extends ParsingSystem {
     } else
       return nBuffer > 0;
   }
+  
+  @Override
+  public int[] getValidActType(Configuration c){
+	  
+	  int[] retval = new int[actionType.size()];
+	  
+	  int nStack = c.getStackSize();
+	  int nBuffer = c.getBufferSize();
+	    
+	  retval[shiftActTypeID] = nBuffer > 0 ? 0 : -1; // set shift
+	  retval[rightReduceActTypeID] = nStack > 2 ? 0 : ( nStack == 2 && nBuffer == 0) ? 0 : -1 ; // set right reduce
+	  retval[leftReduceActTypeID] = nStack > 2 ? 0 : -1; // set left reduce
+	  
+	  return retval;
+  }
+  
+  @Override
+  public int[] getValidLabelGivenActType(Configuration c, int actTypeID){
+	  
+	  if(actTypeID == shiftActTypeID)
+		  return null;
+	  
+	  int[] retval = new int[labels.size()];
+	  int nStack = c.getStackSize();
+	  int nBuffer = c.getBufferSize();
+	  
+	  if(nStack > 2){
+		  Arrays.fill(retval, 0);
+		  retval[rootLabelID] = -1;
+	  }
+	  else if(nStack == 2 && nBuffer == 0 && actTypeID == rightReduceActTypeID){
+		  Arrays.fill(retval, -1);
+		  retval[rootLabelID] = 0;
+	  }
+	  else
+		  throw new RuntimeException("The valid action is not valid!");
+	  
+	  return retval;
+  }
 
   @Override
   public void apply(Configuration c, String t) {
@@ -104,6 +143,18 @@ public class ArcStandard extends ParsingSystem {
       return "R(" + dTree.getLabel(w2) + ")";
     else
       return "S";
+  }
+  
+  @Override
+  public Pair<Integer, Integer> getHierarchicalOracle(Configuration c, DependencyTree dTree) {
+    int w1 = c.getStack(1);
+    int w2 = c.getStack(0);
+    if (w1 > 0 && dTree.getHead(w1) == w2)
+      return new Pair<>(leftReduceActTypeID, label2IndexMap.get( dTree.getLabel(w1) ) );
+    else if (w1 >= 0 && dTree.getHead(w2) == w1 && !c.hasOtherChild(w2, dTree))
+      return new Pair<>(rightReduceActTypeID, label2IndexMap.get( dTree.getLabel(w2) ) );
+    else
+      return new Pair<>(shiftActTypeID, -1);
   }
 
   // NOTE: unused. need to check the correctness again.

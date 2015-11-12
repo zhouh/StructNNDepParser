@@ -20,6 +20,7 @@ import edu.stanford.nlp.trees.GrammaticalStructure;
 import edu.stanford.nlp.trees.TreeGraphNode;
 import edu.stanford.nlp.trees.TypedDependency;
 import edu.stanford.nlp.util.CoreMap;
+import edu.stanford.nlp.util.Pair;
 import edu.stanford.nlp.util.StringUtils;
 import edu.stanford.nlp.util.Timing;
 
@@ -28,6 +29,7 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.Writer;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
@@ -97,7 +99,7 @@ public class DependencyParser {
    * The {@link edu.stanford.nlp.parser.nndep.Classifier} class
    * handles both training and inference.
    */
-  private StructuredPredictClassifier classifier;
+  private Classifier classifier;
 
   private ParsingSystem system;
 
@@ -264,8 +266,69 @@ public class DependencyParser {
 
     return feature;
   }
+  
+  public List<Integer> intArrays2List(int[] array){
+	  List<Integer> retval = new ArrayList<>();
+	  for(int a : array)
+		  retval.add(a);
+	  return retval;
+  }
+  
+  /*
+   * get local training examples
+   * 
+   */
+  public Dataset genGreedyTrainExamples(List<CoreMap> sents, List<DependencyTree> trees) {
+	    Dataset ret = new Dataset(config.numTokens, system.transitions.size());
 
-  public Dataset genTrainExamples(List<CoreMap> sents, List<DependencyTree> trees) {
+	    Counter<Integer> tokPosCount = new IntCounter<>();
+	    System.err.println(Config.SEPARATOR);
+	    System.err.println("Generate training examples...");
+
+	    for (int i = 0; i < sents.size(); ++i) {
+
+	      if (i > 0) {
+	        if (i % 1000 == 0)
+	          System.err.print(i + " ");
+	        if (i % 10000 == 0 || i == sents.size() - 1)
+	          System.err.println();
+	      }
+
+	      if (trees.get(i).isProjective()) {
+	        Configuration c = system.initialConfiguration(sents.get(i));
+
+	        while (!system.isTerminal(c)) {
+	          Pair<Integer, Integer> oraclePair = system.getHierarchicalOracle(c, trees.get(i));
+	          
+	          int[] actTypeLabel = system.getValidActType(c);
+	          int[] depTypeLabel = system.getValidLabelGivenActType(c, oraclePair.first);
+	          
+	          actTypeLabel[oraclePair.first] = 1;
+	          if(oraclePair.first != ParsingSystem.shiftActTypeID)
+	        	  depTypeLabel[oraclePair.second] = 1;
+	          
+	          List<Integer> feature = getFeatures(c);
+
+	          ret.addExample(feature, intArrays2List(actTypeLabel), 
+	        		  depTypeLabel != null ? intArrays2List(depTypeLabel) : null);
+	          
+	          for (int j = 0; j < feature.size(); ++j)
+	            tokPosCount.incrementCount(feature.get(j) * feature.size() + j);
+	          system.apply(c, oraclePair.first, oraclePair.second);
+	        }
+	      }
+	    }
+	    System.err.println("#Train Examples: " + ret.n);
+
+	    preComputed = new ArrayList<>(config.numPreComputed);
+	    List<Integer> sortedTokens = Counters.toSortedList(tokPosCount, false);
+
+	    preComputed = new ArrayList<>(sortedTokens.subList(0, Math.min(config.numPreComputed, sortedTokens.size())));
+
+	    return ret;
+	  }
+
+  public Dataset genGlobalTrainExamples(List<CoreMap> sents, List<DependencyTree> trees) {
     Dataset ret = new Dataset(config.numTokens, system.transitions.size());
 
     Counter<Integer> tokPosCount = new IntCounter<>();
@@ -291,21 +354,19 @@ public class DependencyParser {
         Configuration c = system.initialConfiguration(sents.get(i));
 
         while (!system.isTerminal(c)) {
-          String oracle = system.getOracle(c, trees.get(i));
-          List<Integer> feature = getFeatures(c);
-          List<Integer> label = new ArrayList<>();
-          for (int j = 0; j < system.transitions.size(); ++j) {
-            String str = system.transitions.get(j);
-            if (str.equals(oracle)) {
-            	label.add(1);
-            	acts.add(j);
-            }
-            else if (system.canApply(c, str)) label.add(0);
-            else label.add(-1);
-          }
-
-          ret.addExample(feature, label);
-          examples.add(new Example(feature, label));
+        	
+        	String oracle = system.getOracle(c, trees.get(i));
+        	Pair<Integer, Integer> oraclePair = system.getHierarchicalOracle(c, trees.get(i));
+        	
+        	int[] actTypeLabel = system.getValidActType(c);
+        	int[] depTypeLabel = system.getValidLabelGivenActType(c, oraclePair.first);
+        	
+        	actTypeLabel[oraclePair.first] = 1;
+        	depTypeLabel[oraclePair.second] = 1;
+        	
+        	List<Integer> feature = getFeatures(c);
+	          
+          examples.add(new Example(feature, intArrays2List(actTypeLabel), intArrays2List(depTypeLabel)));
           for (int j = 0; j < feature.size(); ++j)
             tokPosCount.incrementCount(feature.get(j) * feature.size() + j);
           system.apply(c, oracle);
@@ -404,6 +465,7 @@ public class DependencyParser {
       double[] b1 = classifier.getb1();
       double[][] W2 = classifier.getW2();
       double[][] E = classifier.getE();
+      double[][][] labelLayer = classifier.getLabelLayer();
 
       Writer output = IOUtils.getPrintWriter(modelFile);
 
@@ -464,6 +526,16 @@ public class DependencyParser {
           else
             output.write(" ");
         }
+      
+      for(int i = 0; i < labelLayer.length; i++)
+    	  for(int j = 0; j < labelLayer[0].length; j++)
+    		  for(int k = 0; k < labelLayer[0][0].length; k++){
+    			  output.write("" + labelLayer[i][j][k]);
+    			  if(k == labelLayer[0][0].length - 1)
+    				  output.write("\n");
+    			  else
+    				  output.write(" ");
+    		  }
 
       // Finish with pre-computation info
       for (int i = 0; i < preComputed.size(); ++i) {
@@ -604,13 +676,23 @@ public class DependencyParser {
       for (int i = 0; i < b1.length; ++i)
         b1[i] = Double.parseDouble(splits[i]);
 
-      double[][] W2 = new double[nLabel * 2 - 1][hSize];
+      double[][] W2 = new double[ParsingSystem.nActTypeNum][hSize];
       for (int j = 0; j < W2[0].length; ++j) {
         s = input.readLine();
         splits = s.split(" ");
         for (int i = 0; i < W2.length; ++i)
           W2[i][j] = Double.parseDouble(splits[i]);
       }
+      
+      double[][][] labelLayer = new double[ParsingSystem.nActTypeNum][nLabel - 1][hSize]; // remove the NULL label
+      for(int i = 0; i < labelLayer.length; i++)
+    	  for(int j = 0; j < labelLayer[0].length; j++){
+    		  s = input.readLine();
+          	  splits = s.split(" ");
+    		  for(int k = 0; k < labelLayer[0][0].length; k++){
+    			  labelLayer[i][j][k] = Double.parseDouble(splits[k]);
+    		  }
+    	  }
 
       preComputed = new ArrayList<Integer>();
       while (preComputed.size() < nPreComputed) {
@@ -621,7 +703,7 @@ public class DependencyParser {
         }
       }
       input.close();
-      classifier = new StructuredPredictClassifier(config, E, W1, b1, W2, preComputed);
+      classifier = new Classifier(config, E, W1, b1, W2, labelLayer, preComputed);
     } catch (IOException e) {
       throw new RuntimeIOException(e);
     }
@@ -631,135 +713,135 @@ public class DependencyParser {
     t.done("Initializing dependency parser");
   }
   
-  /*
-   *   load model file in training
-   *   
-   *   remove new the classifier
-   */
-  private void loadModelFileInTraining(String modelFile, boolean verbose) {
-	    Timing t = new Timing();
-	    try {
-	      // System.err.println(Config.SEPARATOR);
-	      System.err.println("Loading depparse model file: " + modelFile + " ... ");
-	      String s;
-	      BufferedReader input = IOUtils.readerFromString(modelFile);
-
-	      int nDict, nPOS, nLabel;
-	      int eSize, hSize, nTokens, nPreComputed;
-	      nDict = nPOS = nLabel = eSize = hSize = nTokens = nPreComputed = 0;
-
-	      for (int k = 0; k < 7; ++k) {
-	        s = input.readLine();
-	        if (verbose) {
-	          System.err.println(s);
-	        }
-	        int number = Integer.parseInt(s.substring(s.indexOf('=') + 1));
-	        switch (k) {
-	          case 0:
-	            nDict = number;
-	            break;
-	          case 1:
-	            nPOS = number;
-	            break;
-	          case 2:
-	            nLabel = number;
-	            break;
-	          case 3:
-	            eSize = number;
-	            break;
-	          case 4:
-	            hSize = number;
-	            break;
-	          case 5:
-	            nTokens = number;
-	            break;
-	          case 6:
-	            nPreComputed = number;
-	            break;
-	          default:
-	            break;
-	        }
-	      }
-
-
-	      knownWords = new ArrayList<String>();
-	      knownPos = new ArrayList<String>();
-	      knownLabels = new ArrayList<String>();
-	      double[][] E = classifier.getE();
-	      String[] splits;
-	      int index = 0;
-
-	      for (int k = 0; k < nDict; ++k) {
-	        s = input.readLine();
-	        splits = s.split(" ");
-	        knownWords.add(splits[0]);
-	        for (int i = 0; i < eSize; ++i)
-	          E[index][i] = Double.parseDouble(splits[i + 1]);
-	        index = index + 1;
-	      }
-	      for (int k = 0; k < nPOS; ++k) {
-	        s = input.readLine();
-	        splits = s.split(" ");
-	        knownPos.add(splits[0]);
-	        for (int i = 0; i < eSize; ++i)
-	          E[index][i] = Double.parseDouble(splits[i + 1]);
-	        index = index + 1;
-	      }
-	      for (int k = 0; k < nLabel; ++k) {
-	        s = input.readLine();
-	        splits = s.split(" ");
-	        knownLabels.add(splits[0]);
-	        for (int i = 0; i < eSize; ++i)
-	          E[index][i] = Double.parseDouble(splits[i + 1]);
-	        index = index + 1;
-	      }
-	      generateIDs();
-
-	      double[][] W1 = classifier.getW1();
-	      for (int j = 0; j < W1[0].length; ++j) {
-	        s = input.readLine();
-	        splits = s.split(" ");
-	        for (int i = 0; i < W1.length; ++i)
-	          W1[i][j] = Double.parseDouble(splits[i]);
-	      }
-
-	      double[] b1 = classifier.getb1();
-	      s = input.readLine();
-	      splits = s.split(" ");
-	      for (int i = 0; i < b1.length; ++i)
-	        b1[i] = Double.parseDouble(splits[i]);
-
-	      double[][] W2 = classifier.getW2();
-	      for (int j = 0; j < W2[0].length; ++j) {
-	        s = input.readLine();
-	        splits = s.split(" ");
-	        for (int i = 0; i < W2.length; ++i)
-	          W2[i][j] = Double.parseDouble(splits[i]);
-	      }
-
-	      preComputed = new ArrayList<Integer>();
-	      while (preComputed.size() < nPreComputed) {
-	        s = input.readLine();
-	        splits = s.split(" ");
-	        for (String split : splits) {
-	          preComputed.add(Integer.parseInt(split));
-	        }
-	      }
-	      input.close();
-	      
-	      Map<Integer, Integer> preMap = new HashMap<>();
-	      for (int i = 0; i < preComputed.size(); ++i)
-	        preMap.put(preComputed.get(i), i);
-	      
-	      classifier.setPreMap(preMap);
-	    } catch (IOException e) {
-	      throw new RuntimeIOException(e);
-	    }
-
-	    // initialize the loaded parser
-	    initialize(verbose);
-	    t.done("Initializing dependency parser");
-	  }
+//  /*
+//   *   load model file in training
+//   *   
+//   *   remove new the classifier
+//   */
+//  private void loadModelFileInTraining(String modelFile, boolean verbose) {
+//	    Timing t = new Timing();
+//	    try {
+//	      // System.err.println(Config.SEPARATOR);
+//	      System.err.println("Loading depparse model file: " + modelFile + " ... ");
+//	      String s;
+//	      BufferedReader input = IOUtils.readerFromString(modelFile);
+//
+//	      int nDict, nPOS, nLabel;
+//	      int eSize, hSize, nTokens, nPreComputed;
+//	      nDict = nPOS = nLabel = eSize = hSize = nTokens = nPreComputed = 0;
+//
+//	      for (int k = 0; k < 7; ++k) {
+//	        s = input.readLine();
+//	        if (verbose) {
+//	          System.err.println(s);
+//	        }
+//	        int number = Integer.parseInt(s.substring(s.indexOf('=') + 1));
+//	        switch (k) {
+//	          case 0:
+//	            nDict = number;
+//	            break;
+//	          case 1:
+//	            nPOS = number;
+//	            break;
+//	          case 2:
+//	            nLabel = number;
+//	            break;
+//	          case 3:
+//	            eSize = number;
+//	            break;
+//	          case 4:
+//	            hSize = number;
+//	            break;
+//	          case 5:
+//	            nTokens = number;
+//	            break;
+//	          case 6:
+//	            nPreComputed = number;
+//	            break;
+//	          default:
+//	            break;
+//	        }
+//	      }
+//
+//
+//	      knownWords = new ArrayList<String>();
+//	      knownPos = new ArrayList<String>();
+//	      knownLabels = new ArrayList<String>();
+//	      double[][] E = classifier.getE();
+//	      String[] splits;
+//	      int index = 0;
+//
+//	      for (int k = 0; k < nDict; ++k) {
+//	        s = input.readLine();
+//	        splits = s.split(" ");
+//	        knownWords.add(splits[0]);
+//	        for (int i = 0; i < eSize; ++i)
+//	          E[index][i] = Double.parseDouble(splits[i + 1]);
+//	        index = index + 1;
+//	      }
+//	      for (int k = 0; k < nPOS; ++k) {
+//	        s = input.readLine();
+//	        splits = s.split(" ");
+//	        knownPos.add(splits[0]);
+//	        for (int i = 0; i < eSize; ++i)
+//	          E[index][i] = Double.parseDouble(splits[i + 1]);
+//	        index = index + 1;
+//	      }
+//	      for (int k = 0; k < nLabel; ++k) {
+//	        s = input.readLine();
+//	        splits = s.split(" ");
+//	        knownLabels.add(splits[0]);
+//	        for (int i = 0; i < eSize; ++i)
+//	          E[index][i] = Double.parseDouble(splits[i + 1]);
+//	        index = index + 1;
+//	      }
+//	      generateIDs();
+//
+//	      double[][] W1 = classifier.getW1();
+//	      for (int j = 0; j < W1[0].length; ++j) {
+//	        s = input.readLine();
+//	        splits = s.split(" ");
+//	        for (int i = 0; i < W1.length; ++i)
+//	          W1[i][j] = Double.parseDouble(splits[i]);
+//	      }
+//
+//	      double[] b1 = classifier.getb1();
+//	      s = input.readLine();
+//	      splits = s.split(" ");
+//	      for (int i = 0; i < b1.length; ++i)
+//	        b1[i] = Double.parseDouble(splits[i]);
+//
+//	      double[][] W2 = classifier.getW2();
+//	      for (int j = 0; j < W2[0].length; ++j) {
+//	        s = input.readLine();
+//	        splits = s.split(" ");
+//	        for (int i = 0; i < W2.length; ++i)
+//	          W2[i][j] = Double.parseDouble(splits[i]);
+//	      }
+//
+//	      preComputed = new ArrayList<Integer>();
+//	      while (preComputed.size() < nPreComputed) {
+//	        s = input.readLine();
+//	        splits = s.split(" ");
+//	        for (String split : splits) {
+//	          preComputed.add(Integer.parseInt(split));
+//	        }
+//	      }
+//	      input.close();
+//	      
+//	      Map<Integer, Integer> preMap = new HashMap<>();
+//	      for (int i = 0; i < preComputed.size(); ++i)
+//	        preMap.put(preComputed.get(i), i);
+//	      
+//	      classifier.setPreMap(preMap);
+//	    } catch (IOException e) {
+//	      throw new RuntimeIOException(e);
+//	    }
+//
+//	    // initialize the loaded parser
+//	    initialize(verbose);
+//	    t.done("Initializing dependency parser");
+//	  }
 
   // TODO this should be a function which returns the embeddings array + embedID
   // otherwise the class needlessly carries around the extra baggage of `embeddings`
@@ -836,11 +918,6 @@ public class DependencyParser {
 
     // Initialize a classifier; prepare for training
     setupClassifierForTraining(trainSents, trainTrees, embedFile);
-    
-    if(config.bUsePretraining){
-    	loadModelFileInTraining(config.sBaseModel, false);
-    
-    }
     classifier.setParser(this);
     
     /**
@@ -855,13 +932,17 @@ public class DependencyParser {
             // prediction, we just do this once in #initialize
             classifier.preCompute();
 
-            List<List<DependencyTree>> predictedBeam = devSents.stream().map(this::predictInnerWithBeam).collect(toList());
-      	  system.evaluateOracle(devSents, predictedBeam, devTrees);
+//            List<List<DependencyTree>> predictedBeam;
+//            if(config.globalTraining)
+//            	predictedBeam = devSents.stream().map(this::predictInnerWithBeam).collect(toList());
+//            else
+            
+//      	  system.evaluateOracle(devSents, predictedBeam, devTrees);
+//            for(int i = 0; i<predictedBeam.size(); i++)
+//            	predicated.add(predictedBeam.get(i).get(0));
       	  
-      	  List<DependencyTree> predicated = new ArrayList<DependencyTree>();
-      	  for(int i = 0; i<predictedBeam.size(); i++)
-      		  predicated.add(predictedBeam.get(i).get(0));
 
+            List<DependencyTree> predicated = devSents.stream().map(this::predictInner).collect(toList());
             double uas = system.getUASScore(devSents, predicated, devTrees);
             System.err.println("base model UAS: " + uas);
 
@@ -889,11 +970,17 @@ public class DependencyParser {
     		  
     	  }
     	  else{
-    		  StructuredPredictClassifier.Cost cost = classifier.computeGlobalCostFunction(globalExamples, config.batchSize, config.regParameter, config.dropProb,
-    				  config.nBeam, config.dMargin);
-    		  System.err.println("Cost = " + cost.getCost() + ", Correct(%) = " + cost.getPercentCorrect());
-    		  classifier.takeAdaGradientStep(cost, config.adaAlpha, config.adaEps);
+//    		  Classifier.Cost cost = classifier.computeGlobalCostFunction(globalExamples, config.batchSize, config.regParameter, config.dropProb,
+//    				  config.nBeam, config.dMargin);
+//    		  System.err.println("Cost = " + cost.getCost() + ", Correct(%) = " + cost.getPercentCorrect());
+//    		  classifier.takeAdaGradientStep(cost, config.adaAlpha, config.adaEps);
     	  }
+      }
+      else{
+    	  Classifier.Cost cost = classifier.computeGreedyCostFunction(config.batchSize, 
+    			  config.regParameter, config.dropProb);
+		  System.err.println("Cost = " + cost.getCost() + ", Correct(%) = " + cost.getPercentCorrect());
+		  classifier.takeAdaGradientStep(cost, config.adaAlpha, config.adaEps);
       }
       System.err.println("Elapsed Time: " + (System.currentTimeMillis() - startTime) / 1000.0 + " (s)");
 
@@ -904,13 +991,7 @@ public class DependencyParser {
         // prediction, we just do this once in #initialize
         classifier.preCompute();
 
-        List<List<DependencyTree>> predictedBeam = devSents.stream().map(this::predictInnerWithBeam).collect(toList());
-  	  system.evaluateOracle(devSents, predictedBeam, devTrees);
-  	  
-  	  List<DependencyTree> predicated = new ArrayList<DependencyTree>();
-  	  for(int i = 0; i<predictedBeam.size(); i++)
-  		  predicated.add(predictedBeam.get(i).get(0));
-
+        List<DependencyTree> predicated = devSents.stream().map(this::predictInner).collect(toList());
         double uas = system.getUASScore(devSents, predicated, devTrees);
         System.err.println("UAS: " + uas);
 
@@ -931,21 +1012,6 @@ public class DependencyParser {
 
     classifier.finalizeTraining();
 
-    if (devFile != null) {
-      // Do final UAS evaluation and save if final model beats the
-      // best intermediate one
-      List<DependencyTree> predicted = devSents.stream().map(this::predictInner).collect(toList());
-      double uas = system.getUASScore(devSents, predicted, devTrees);
-
-      if (uas > bestUAS) {
-        System.err.printf("Final model UAS: %f%n", uas);
-        System.err.printf("Exceeds best previous UAS of %f. Saving model file..%n", bestUAS);
-
-        writeModelFile(modelFile);
-      }
-    } else {
-      writeModelFile(modelFile);
-    }
   }
 
   /**
@@ -969,7 +1035,8 @@ public class DependencyParser {
     double[][] E = new double[knownWords.size() + knownPos.size() + knownLabels.size()][config.embeddingSize];
     double[][] W1 = new double[config.hiddenSize][config.embeddingSize * config.numTokens];
     double[] b1 = new double[config.hiddenSize];
-    double[][] W2 = new double[knownLabels.size() * 2 - 1][config.hiddenSize];
+    double[][] W2 = new double[system.nActTypeNum][config.hiddenSize];
+    double[][][] labelLayer = new double[system.nActTypeNum][system.labels.size()][config.hiddenSize];
 
     // Randomly initialize weight matrices / vectors
     Random random = Util.getRandom();
@@ -984,6 +1051,10 @@ public class DependencyParser {
       for (int j = 0; j < W2[i].length; ++j)
         W2[i][j] = random.nextDouble() * 2 * config.initRange - config.initRange;
 
+    for (int i = 0; i < labelLayer.length; ++i)
+        for (int j = 0; j < labelLayer[i].length; ++j)
+        	for(int k = 0; k < labelLayer[i][j].length; k++)
+        		labelLayer[i][j][k] = random.nextDouble() * 2 * config.initRange - config.initRange;
     // Read embeddings into `embedID`, `embeddings`
     readEmbedFile(embedFile);
 
@@ -1009,8 +1080,13 @@ public class DependencyParser {
     }
     System.err.println("Found embeddings: " + foundEmbed + " / " + knownWords.size());
 
-    Dataset trainSet = genTrainExamples(trainSents, trainTrees);
-    classifier = new StructuredPredictClassifier(config, trainSet, E, W1, b1, W2, preComputed);
+    Dataset trainSet;
+    if(config.globalTraining)
+    	trainSet = genGlobalTrainExamples(trainSents, trainTrees);
+    else
+    	trainSet = genGreedyTrainExamples(trainSents, trainTrees);
+    
+    classifier = new Classifier(config, trainSet, E, W1, b1, W2, labelLayer, preComputed);
     classifier.setParsingSystem(system);
   }
 
@@ -1021,23 +1097,13 @@ public class DependencyParser {
    * for general parsing purposes.
    */
   private DependencyTree predictInner(CoreMap sentence) {
-    int numTrans = system.transitions.size();
-
+	  
     Configuration c = system.initialConfiguration(sentence);
     while (!system.isTerminal(c)) {
-      double[] scores = classifier.computeScores(getFeatureArray(c));
+    	
+      Pair<Integer, Integer> optActPair = classifier.computeHierarchicalScore(getFeatureArray(c), c);
 
-      double optScore = Double.NEGATIVE_INFINITY;
-      String optTrans = null;
-
-      for (int j = 0; j < numTrans; ++j) {
-        if (scores[j] > optScore && system.canApply(c, system.transitions.get(j))) {
-          optScore = scores[j];
-          optTrans = system.transitions.get(j);
-          //System.out.println(optTrans);
-        }
-      }
-      system.apply(c, optTrans);
+      system.apply(c, optActPair.first, optActPair.second);
     }
     return c.tree;
   }
@@ -1151,7 +1217,14 @@ public class DependencyParser {
       numWords += testSent.get(CoreAnnotations.TokensAnnotation.class).size();
     }
 
-    List<DependencyTree> predicted = testSents.stream().map(this::predictInner).collect(toList());
+    List<DependencyTree> predicted = null;
+    
+    if(config.globalTraining){
+    	
+    }
+    else
+    	predicted = testSents.stream().map(this::predictInner).collect(toList());
+    	
     Map<String, Double> result = system.evaluate(testSents, predicted, testTrees);
     double lasNoPunc = result.get("LASwoPunc");
     System.err.printf("UAS = %.4f%n", result.get("UASwoPunc"));
@@ -1235,74 +1308,6 @@ public class DependencyParser {
     numArgs.put("outFile", 1);
   }
 
-  /**
-   * A main program for training, testing and using the parser.
-   *
-   * <p>
-   * You can use this program to train new parsers from treebank data,
-   * evaluate on test treebank data, or parse raw text input.
-   *
-   * <p>
-   * Sample usages:
-   * <ul>
-   *   <li>
-   *     <strong>Train a parser with CoNLL treebank data:</strong>
-   *     <code>java edu.stanford.nlp.parser.nndep.DependencyParser -trainFile trainPath -devFile devPath -embedFile wordEmbeddingFile -embeddingSize wordEmbeddingDimensionality -model modelOutputFile.txt.gz</code>
-   *   </li>
-   *   <li>
-   *     <strong>Parse raw text from a file:</strong>
-   *     <code>java edu.stanford.nlp.parser.nndep.DependencyParser -model modelOutputFile.txt.gz -textFile rawTextToParse -outFile dependenciesOutputFile.txt</code>
-   *   </li>
-   *   <li>
-   *     <strong>Parse raw text from standard input, writing to standard output:</strong>
-   *     <code>java edu.stanford.nlp.parser.nndep.DependencyParser -model modelOutputFile.txt.gz -textFile - -outFile -</code>
-   *   </li>
-   * </ul>
-   *
-   * <p>
-   * See below for more information on all of these training / test options and more.
-   *
-   * <p>
-   * Input / output options:
-   * <table>
-   *   <tr><th>Option</th><th>Required for training</th><th>Required for testing / parsing</th><th>Description</th></tr>
-   *   <tr><td><tt>&#8209;devFile</tt></td><td>Optional</td><td>No</td><td>Path to a development-set treebank in <a href="http://ilk.uvt.nl/conll/#dataformat">CoNLL-X format</a>. If provided, the </td></tr>
-   *   <tr><td><tt>&#8209;embedFile</tt></td><td>Optional (highly recommended!)</td><td>No</td><td>A word embedding file, containing distributed representations of English words. Each line of the provided file should contain a single word followed by the elements of the corresponding word embedding (space-delimited). It is not absolutely necessary that all words in the treebank be covered by this embedding file, though the parser's performance will generally improve if you are able to provide better embeddings for more words.</td></tr>
-   *   <tr><td><tt>&#8209;model</tt></td><td>Yes</td><td>Yes</td><td>Path to a model file. If the path ends in <tt>.gz</tt>, the model will be read as a Gzipped model file. During training, we write to this path; at test time we read a pre-trained model from this path.</td></tr>
-   *   <tr><td><tt>&#8209;textFile</tt></td><td>No</td><td>Yes (or <tt>testFile</tt>)</td><td>Path to a plaintext file containing sentences to be parsed.</td></tr>
-   *   <tr><td><tt>&#8209;testFile</tt></td><td>No</td><td>Yes (or <tt>textFile</tt>)</td><td>Path to a test-set treebank in <a href="http://ilk.uvt.nl/conll/#dataformat">CoNLL-X format</a> for final evaluation of the parser.</td></tr>
-   *   <tr><td><tt>&#8209;trainFile</tt></td><td>Yes</td><td>No</td><td>Path to a training treebank in <a href="http://ilk.uvt.nl/conll/#dataformat">CoNLL-X format</a></td></tr>
-   * </table>
-   *
-   * Training options:
-   * <table>
-   *   <tr><th>Option</th><th>Default</th><th>Description</th></tr>
-   *   <tr><td><tt>&#8209;adaAlpha</tt></td><td>0.01</td><td>Global learning rate for AdaGrad training</td></tr>
-   *   <tr><td><tt>&#8209;adaEps</tt></td><td>1e-6</td><td>Epsilon value added to the denominator of AdaGrad update expression for numerical stability</td></tr>
-   *   <tr><td><tt>&#8209;batchSize</tt></td><td>10000</td><td>Size of mini-batch used for training</td></tr>
-   *   <tr><td><tt>&#8209;clearGradientsPerIter</tt></td><td>0</td><td>Clear AdaGrad gradient histories every <em>n</em> iterations. If zero, no gradient clearing is performed.</td></tr>
-   *   <tr><td><tt>&#8209;dropProb</tt></td><td>0.5</td><td>Dropout probability. For each training example we randomly choose some amount of units to disable in the neural network classifier. This parameter controls the proportion of units "dropped out."</td></tr>
-   *   <tr><td><tt>&#8209;embeddingSize</tt></td><td>50</td><td>Dimensionality of word embeddings provided</td></tr>
-   *   <tr><td><tt>&#8209;evalPerIter</tt></td><td>100</td><td>Run full UAS (unlabeled attachment score) evaluation every time we finish this number of iterations. (Only valid if a development treebank is provided with <tt>&#8209;devFile</tt>.)</td></tr>
-   *   <tr><td><tt>&#8209;hiddenSize</tt></td><td>200</td><td>Dimensionality of hidden layer in neural network classifier</td></tr>
-   *   <tr><td><tt>&#8209;initRange</tt></td><td>0.01</td><td>Bounds of range within which weight matrix elements should be initialized. Each element is drawn from a uniform distribution over the range <tt>[-initRange, initRange]</tt>.</td></tr>
-   *   <tr><td><tt>&#8209;maxIter</tt></td><td>20000</td><td>Number of training iterations to complete before stopping and saving the final model.</td></tr>
-   *   <tr><td><tt>&#8209;numPreComputed</tt></td><td>100000</td><td>The parser pre-computes hidden-layer unit activations for particular inputs words at both training and testing time in order to speed up feedforward computation in the neural network. This parameter determines how many words for which we should compute hidden-layer activations.</td></tr>
-   *   <tr><td><tt>&#8209;regParameter</tt></td><td>1e-8</td><td>Regularization parameter for training</td></tr>
-   *   <tr><td><tt>&#8209;saveIntermediate</tt></td><td><tt>true</tt></td><td>If <tt>true</tt>, continually save the model version which gets the highest UAS value on the dev set. (Only valid if a development treebank is provided with <tt>&#8209;devFile</tt>.)</td></tr>
-   *   <tr><td><tt>&#8209;trainingThreads</tt></td><td>1</td><td>Number of threads to use during training. Note that depending on training batch size, it may be unwise to simply choose the maximum amount of threads for your machine. On our 16-core test machines: a batch size of 10,000 runs fastest with around 6 threads; a batch size of 100,000 runs best with around 10 threads.</td></tr>
-   *   <tr><td><tt>&#8209;wordCutOff</tt></td><td>1</td><td>The parser can optionally ignore rare words by simply choosing an arbitrary "unknown" feature representation for words that appear with frequency less than <em>n</em> in the corpus. This <em>n</em> is controlled by the <tt>wordCutOff</tt> parameter.</td></tr>
-   * </table>
-   *
-   * Runtime parsing options:
-   * <table>
-   *   <tr><th>Option</th><th>Default</th><th>Description</th></tr>
-   *   <tr><td><tt>&#8209;escaper</tt></td><td>N/A</td><td>Only applicable for testing with <tt>-textFile</tt>. If provided, use this word-escaper when parsing raw sentences. (Should be a fully-qualified class name like <tt>edu.stanford.nlp.trees.international.arabic.ATBEscaper</tt>.)</td></tr>
-   *   <tr><td><tt>&#8209;numPreComputed</tt></td><td>100000</td><td>The parser pre-computes hidden-layer unit activations for particular inputs words at both training and testing time in order to speed up feedforward computation in the neural network. This parameter determines how many words for which we should compute hidden-layer activations.</td></tr>
-   *   <tr><td><tt>&#8209;sentenceDelimiter</tt></td><td>N/A</td><td>Only applicable for testing with <tt>-textFile</tt>.  If provided, assume that the given <tt>textFile</tt> has already been sentence-split, and that sentences are separated by this delimiter.</td></tr>
-   *   <tr><td><tt>&#8209;tagger.model</tt></td><td>edu/stanford/nlp/models/pos-tagger/english-left3words/english-left3words-distsim.tagger</td><td>Only applicable for testing with <tt>-textFile</tt>. Path to a part-of-speech tagger to use to pre-tag the raw sentences before parsing.</td></tr>
-   * </table>
-   */
   public static void main(String[] args) {
     Properties props = StringUtils.argsToProperties(args, numArgs);
     DependencyParser parser = new DependencyParser(props);
@@ -1324,11 +1329,11 @@ public class DependencyParser {
       loaded = true;
       
       //beam decoder with exitting model trained by greedy
-      if(props.containsKey("beamDecode")) 
-    	  parser.beamDecode(props.getProperty("testFile"), null);
-      else 
-    	  parser.testCoNLL(props.getProperty("testFile"), props.getProperty("outFile"));
-      
+//      if(props.containsKey("beamDecode")) 
+//    	  parser.beamDecode(props.getProperty("testFile"), null);
+//      else 
+//    	  parser.testCoNLL(props.getProperty("testFile"), props.getProperty("outFile"));
+      parser.testCoNLL(props.getProperty("testFile"), props.getProperty("outFile"));
     }
 
     // Parse raw text data
@@ -1369,151 +1374,151 @@ public class DependencyParser {
    * This "inner" method returns a structure unique to this package; use {@link #predict(edu.stanford.nlp.util.CoreMap)}
    * for general parsing purposes.
    */
-  private List<DependencyTree> predictInnerWithBeam(CoreMap sentence) {
-	  
-	  int nBeam = config.nBeam;
-	  int nSentSize = sentence.get(CoreAnnotations.TokensAnnotation.class).size();
-	  int nRound = nSentSize * 2 - 1;
-	  int nActNum = system.transitions.size();
-	  
-	  List<DepState> beam = new ArrayList<DepState>();
-	  Configuration c = system.initialConfiguration(sentence);
-	  if(system.canApply(c, system.transitions.get(nActNum-1))){
-		  system.apply(c, system.transitions.get(nActNum-1));
-	  }
-	  else{
-		  throw new RuntimeException("The first action is not SHIFT");
-	  }
-	  
-	  // only store the best beam candidates in decoding!
-	  beam.add(new DepState(c, system.transitions.size()-2, 0.0)) ;
-
-	  // the lattice to store states to be sorted
-	  List<DepState> lattice = new ArrayList<DepState>();
-    
-	  for(int i = 0; i < nRound; i++){
-		  lattice.clear();
-		  
-		  //begin to expand
-		  for(int j=0; j<beam.size(); j++ ){
-			  DepState beam_j = beam.get(j);
-			  double[] scores = classifier.computeScores(getFeatureArray( beam_j.c ));
-			  
-			  // do softmax
-			  softmax(scores, beam_j.c);
-			  
-			  // add all expanded candidates to lattice
-//			  System.err.println(j+" lattice###################################");
-			  for(int k = 0; k<nActNum; k++){
-				  if( system.canApply(beam_j.c, system.transitions.get(k)) ){
-					  lattice.add(new DepState(beam_j.c, k , beam_j.score + scores[k] ));
-//					  System.err.println(k+"# "+lattice.get(lattice.size()-1));
-				  }
-			  }
-		  }
-		  
-		  // sort the lattice
-		  Collections.sort(lattice);
-		  
-		  //add from lattice to beam
-		  beam.clear();
-		  beam.addAll(lattice.subList(0, nBeam > lattice.size() ? lattice.size() : nBeam));
-		  
-		  // Apply the action in DepState!
-//		  System.err.println("Round: "+i+"======================================================");
-		  for(DepState state : beam){
-			  state.StateApply(system);
-//			  System.err.println(state);
-		     
-		  }
-		  
-	  }
-    
-	  List<DependencyTree> retval = new ArrayList<DependencyTree>();
-	  // return the beam trees!
-	  for(int i = 0; i<beam.size(); i++){
-		  retval.add(beam.get(i).c.tree);
-	  }
-	  return retval;
-  }
-  
-  
-  public List<Integer> softmax(double[] scores, Configuration c) {
-	// TODO Auto-generated method stub
-	 
-	  int numLabels = system.transitions.size();
-	  double maxscore = -1000;
-	  int maxId = -1;
-	  ArrayList<Integer> label = new ArrayList<Integer>(system.transitions.size());
-	  
-	  for(int i = 0; i<numLabels; i++){
-		  if(system.canApply(c, system.transitions.get(i))){
-			  label.add(0);
-			  if(maxId==-1 || scores[i]>maxscore){
-				  maxId=i;
-				  maxscore=scores[i];
-			  }
-		  }
-		  else {
-			label.add(-1);
-		}
-	  }
-	  
-	  /*
-	     *   Do soft max!
-	     */
-	    double sum2 = 0.0;	//sum of scores of all actions after softmax  
-//	    double maxScore = scores[maxId];
+//  private List<DependencyTree> predictInnerWithBeam(CoreMap sentence) {
+//	  
+//	  int nBeam = config.nBeam;
+//	  int nSentSize = sentence.get(CoreAnnotations.TokensAnnotation.class).size();
+//	  int nRound = nSentSize * 2 - 1;
+//	  int nActNum = system.transitions.size();
+//	  
+//	  List<DepState> beam = new ArrayList<DepState>();
+//	  Configuration c = system.initialConfiguration(sentence);
+//	  if(system.canApply(c, system.transitions.get(nActNum-1))){
+//		  system.apply(c, system.transitions.get(nActNum-1));
+//	  }
+//	  else{
+//		  throw new RuntimeException("The first action is not SHIFT");
+//	  }
+//	  
+//	  // only store the best beam candidates in decoding!
+//	  beam.add(new DepState(c, system.transitions.size()-2, 0.0)) ;
+//
+//	  // the lattice to store states to be sorted
+//	  List<DepState> lattice = new ArrayList<DepState>();
+//    
+//	  for(int i = 0; i < nRound; i++){
+//		  lattice.clear();
+//		  
+//		  //begin to expand
+//		  for(int j=0; j<beam.size(); j++ ){
+//			  DepState beam_j = beam.get(j);
+//			  double[] scores = classifier.computeScores(getFeatureArray( beam_j.c ));
+//			  
+//			  // do softmax
+//			  softmax(scores, beam_j.c);
+//			  
+//			  // add all expanded candidates to lattice
+////			  System.err.println(j+" lattice###################################");
+//			  for(int k = 0; k<nActNum; k++){
+//				  if( system.canApply(beam_j.c, system.transitions.get(k)) ){
+//					  lattice.add(new DepState(beam_j.c, k , beam_j.score + scores[k] ));
+////					  System.err.println(k+"# "+lattice.get(lattice.size()-1));
+//				  }
+//			  }
+//		  }
+//		  
+//		  // sort the lattice
+//		  Collections.sort(lattice);
+//		  
+//		  //add from lattice to beam
+//		  beam.clear();
+//		  beam.addAll(lattice.subList(0, nBeam > lattice.size() ? lattice.size() : nBeam));
+//		  
+//		  // Apply the action in DepState!
+////		  System.err.println("Round: "+i+"======================================================");
+//		  for(DepState state : beam){
+//			  state.StateApply(system);
+////			  System.err.println(state);
+//		     
+//		  }
+//		  
+//	  }
+//    
+//	  List<DependencyTree> retval = new ArrayList<DependencyTree>();
+//	  // return the beam trees!
+//	  for(int i = 0; i<beam.size(); i++){
+//		  retval.add(beam.get(i).c.tree);
+//	  }
+//	  return retval;
+//  }
+//  
+//  
+//  public List<Integer> softmax(double[] scores, Configuration c) {
+//	// TODO Auto-generated method stub
+//	 
+//	  int numLabels = system.transitions.size();
+//	  double maxscore = -1000;
+//	  int maxId = -1;
+//	  ArrayList<Integer> label = new ArrayList<Integer>(system.transitions.size());
+//	  
+//	  for(int i = 0; i<numLabels; i++){
+//		  if(system.canApply(c, system.transitions.get(i))){
+//			  label.add(0);
+//			  if(maxId==-1 || scores[i]>maxscore){
+//				  maxId=i;
+//				  maxscore=scores[i];
+//			  }
+//		  }
+//		  else {
+//			label.add(-1);
+//		}
+//	  }
+//	  
+//	  /*
+//	     *   Do soft max!
+//	     */
+//	    double sum2 = 0.0;	//sum of scores of all actions after softmax  
+////	    double maxScore = scores[maxId];
+////	    
+////	    for (int i = 0; i < numLabels; ++i) {
+////	      if (label.get(i)>= 0) {
+////	    	  
+////	        scores[i] = Math.exp(scores[i] - maxScore);
+////	        sum2 += scores[i];
+////	      }
+////	    }
+////	    for(int i =0; i<numLabels;i++)
+////	    	if(label.get(i) != -1)
+////	    		scores[i]=Math.log(scores[i]/sum2);  //out put the log of probability
 //	    
-//	    for (int i = 0; i < numLabels; ++i) {
-//	      if (label.get(i)>= 0) {
-//	    	  
-//	        scores[i] = Math.exp(scores[i] - maxScore);
-//	        sum2 += scores[i];
-//	      }
-//	    }
-//	    for(int i =0; i<numLabels;i++)
-//	    	if(label.get(i) != -1)
-//	    		scores[i]=Math.log(scores[i]/sum2);  //out put the log of probability
-	    
-	    return label;
-}
-
-private void beamDecode(String testFile, String outFile) {
-
-	  System.err.println("Test File: " + testFile);
-	  Timing timer = new Timing();
-	  List<CoreMap> testSents = new ArrayList<>();
-	  List<DependencyTree> testTrees = new ArrayList<DependencyTree>();
-	  Util.loadConllFile(testFile, testSents, testTrees);
-	  // count how much to parse
-	  int numWords = 0;
-	  int numSentences = 0;
-	  for (CoreMap testSent : testSents) {
-		  numSentences += 1;
-		  numWords += testSent.get(CoreAnnotations.TokensAnnotation.class).size();
-	  }
-	  
-	  List<List<DependencyTree>> predictedBeam = testSents.stream().map(this::predictInnerWithBeam).collect(toList());
-	  system.evaluateOracle(testSents, predictedBeam, testTrees);
-	  
-	  List<DependencyTree> predicated = new ArrayList<DependencyTree>();
-	  for(int i = 0; i<predictedBeam.size(); i++)
-		  predicated.add(predictedBeam.get(i).get(0));
-	  Map<String, Double>result = system.evaluate(testSents, predicated, testTrees);
-	  double lasNoPunc = result.get("LASwoPunc");
-	  System.err.printf("UAS = %.4f%n", result.get("UASwoPunc"));
-	  System.err.printf("LAS = %.4f%n", lasNoPunc);
-	  long millis = timer.stop();
-	  double wordspersec = numWords / (((double) millis) / 1000);
-	  double sentspersec = numSentences / (((double) millis) / 1000);
-	  System.err.printf("%s tagged %d words in %d sentences in %.1fs at %.1f w/s, %.1f sent/s.%n",
-			  StringUtils.getShortClassName(this), numWords, numSentences, millis / 1000.0, wordspersec, sentspersec);
-	  
-	  //if (outFile != null) {
-		 // Util.writeConllFile(outFile, testSents, predicted);
-	  
-
-  }
+//	    return label;
+//}
+//
+//private void beamDecode(String testFile, String outFile) {
+//
+//	  System.err.println("Test File: " + testFile);
+//	  Timing timer = new Timing();
+//	  List<CoreMap> testSents = new ArrayList<>();
+//	  List<DependencyTree> testTrees = new ArrayList<DependencyTree>();
+//	  Util.loadConllFile(testFile, testSents, testTrees);
+//	  // count how much to parse
+//	  int numWords = 0;
+//	  int numSentences = 0;
+//	  for (CoreMap testSent : testSents) {
+//		  numSentences += 1;
+//		  numWords += testSent.get(CoreAnnotations.TokensAnnotation.class).size();
+//	  }
+//	  
+//	  List<List<DependencyTree>> predictedBeam = testSents.stream().map(this::predictInnerWithBeam).collect(toList());
+//	  system.evaluateOracle(testSents, predictedBeam, testTrees);
+//	  
+//	  List<DependencyTree> predicated = new ArrayList<DependencyTree>();
+//	  for(int i = 0; i<predictedBeam.size(); i++)
+//		  predicated.add(predictedBeam.get(i).get(0));
+//	  Map<String, Double>result = system.evaluate(testSents, predicated, testTrees);
+//	  double lasNoPunc = result.get("LASwoPunc");
+//	  System.err.printf("UAS = %.4f%n", result.get("UASwoPunc"));
+//	  System.err.printf("LAS = %.4f%n", lasNoPunc);
+//	  long millis = timer.stop();
+//	  double wordspersec = numWords / (((double) millis) / 1000);
+//	  double sentspersec = numSentences / (((double) millis) / 1000);
+//	  System.err.printf("%s tagged %d words in %d sentences in %.1fs at %.1f w/s, %.1f sent/s.%n",
+//			  StringUtils.getShortClassName(this), numWords, numSentences, millis / 1000.0, wordspersec, sentspersec);
+//	  
+//	  //if (outFile != null) {
+//		 // Util.writeConllFile(outFile, testSents, predicted);
+//	  
+//
+//  }
 
 }

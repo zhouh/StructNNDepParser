@@ -6,6 +6,7 @@ import edu.stanford.nlp.trees.PennTreebankLanguagePack;
 import edu.stanford.nlp.trees.TreebankLanguagePack;
 import edu.stanford.nlp.util.CollectionUtils;
 import edu.stanford.nlp.util.CoreMap;
+import edu.stanford.nlp.util.Pair;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -31,9 +32,16 @@ public abstract class ParsingSystem {
    * Dependency label used between root of sentence and ROOT node
    */
   protected final String rootLabel;
+  public final int rootLabelID;
 
   protected List<String> labels, transitions, actionType;
-
+  public HashMap<String, Integer> label2IndexMap;
+  
+  public static final int shiftActTypeID = 0;
+  public static final int rightReduceActTypeID = 1;
+  public static final int leftReduceActTypeID = 2;
+  public static final int nActTypeNum = 3;
+  
   /**
    * Generate all possible transitions which this parsing system can
    * take for any given configuration.
@@ -59,6 +67,24 @@ public abstract class ParsingSystem {
   
   public void apply(Configuration c, int t){
 	  apply(c, transitions.get(t));
+  }
+  
+  public void apply(Configuration c, int actType, int depType){
+	  int actID = -1;
+	  switch (actType) {
+	case shiftActTypeID:
+		actID = shiftActTypeID;	
+		break;
+	case rightReduceActTypeID:
+		actID = 1 + depType;
+		break;
+	case leftReduceActTypeID:
+		actID = 1 + labels.size() + depType;
+		break;
+	default:
+		throw new RuntimeException("unvalid action!");
+	}
+	  apply(c, actID);
   }
 
   /**
@@ -101,14 +127,27 @@ public abstract class ParsingSystem {
   public ParsingSystem(TreebankLanguagePack tlp, List<String> labels, boolean verbose) {
     this.tlp = tlp;
     this.labels = new ArrayList<>(labels);
-    
-    actionType.add("L");
-    actionType.add("R");
+    actionType = new ArrayList<>();
+    /*
+     * #NOTE that the action type create order is
+     * related to the action type ID parameter!!!
+     */
     actionType.add("S");
+    actionType.add("R");
+    actionType.add("L");
+    
+    /*
+     * prepare label2index map
+     */
+    label2IndexMap = new HashMap<String, Integer>();
+    for(int i = 0; i < labels.size(); i++)
+    	label2IndexMap.put(labels.get(i), i);
+    
     
 
     //NOTE: assume that the first element of labels is rootLabel
     rootLabel = labels.get(0);
+    rootLabelID = 0;
     makeTransitions();
 
     if (verbose) {
@@ -350,5 +389,20 @@ public abstract class ParsingSystem {
     Map<String, Double> result = evaluate(sentences, trees, goldTrees);
     return result == null || !result.containsKey("UASwoPunc") ? -1.0 : result.get("UASwoPunc");
   }
+
+public Pair<Integer, Integer> getHierarchicalOracle(Configuration c, DependencyTree dTree) {
+	return null;
+}
+
+
+public int[] getValidActType(Configuration c) {
+	// TODO Auto-generated method stub
+	return null;
+}
+
+public int[] getValidLabelGivenActType(Configuration c, int actTypeID) {
+	// TODO Auto-generated method stub
+	return null;
+}
 
 }
