@@ -1,4 +1,4 @@
-package nndep;
+package nndep.baseline;
 
 import edu.stanford.nlp.international.Languages;
 import edu.stanford.nlp.ling.HasWord;
@@ -106,16 +106,6 @@ public class Config
    * This probability controls the proportion of units "dropped out."
    */
   public double dropProb = 0.5;
-  
-  /**
-   *   the base multiplier in exponential decay
-   */
-  public double dExpDecaybase = 0.8;
-  
-  /**
-   *   whether to use exponential decay
-   */
-  public boolean bUseExpDecay = false;
 
   /**
    * Size of the neural network hidden layer.
@@ -126,11 +116,6 @@ public class Config
    * Dimensionality of the word embeddings used
    */
   public int embeddingSize = 50;
-  
-  /*
-   *   model for pretraining
-   */
-  public String sBaseModel = "model";
 
   /**
    * Total number of tokens provided as input to the classifier. (Each
@@ -169,55 +154,6 @@ public class Config
   public boolean saveIntermediate = true;
 
   /**
-   *   Training with SGD and update immediately after back propagation!
-   */
-  public boolean sgdTraining = false;
-  
-  /**
-   * output the analysis of wrong action
-   */
-  public boolean bWrongActionNanlysis = false;
-  
-  /**
-   *   Train in sentence level with global training and beam search decoding
-   */
-  public boolean globalTraining = false;
-  
-  /**
-   *   Early update used in global update
-   */
-  public boolean earlyUpdate = true;
-  
-  /**
-   *   beam size with beam search decoder
-   */
-  public int nBeam = 8;
-  
-  /*
-   *  whether to update if get the right dependency tree 
-   */
-  public boolean bAggressiveUpdate = true;
-  
-  /*
-   *  load pretraining model!
-   */
-  public boolean bUsePretraining = false;
-  
-  public int nOracleDepth = 1;
-  
-  /*
-   * hierarchical beam size 
-   */
-  public int nHierarchyActTypeBeamSize = 16;
-  public int nHierarchiyDepTypeBeamSize = 4;
-
-  /**
-   *   margin used in max-margin update!
-   */
-  public double dMargin = 0.1;
-  
-  
-  /**
    * Describes language-specific properties necessary for training and
    * testing. By default,
    * {@link edu.stanford.nlp.trees.PennTreebankLanguagePack} will be
@@ -250,13 +186,6 @@ public class Config
    */
   public String tagger = MaxentTagger.DEFAULT_JAR_PATH;
 
-
-  /**
-   * max revised action num in best-first reranking
-   * 
-   */
-  public int nMaxReviseActNum = 3;
-
   public Config(Properties properties) {
     setProperties(properties);
   }
@@ -277,22 +206,7 @@ public class Config
     evalPerIter = PropertiesUtils.getInt(props, "evalPerIter", evalPerIter);
     clearGradientsPerIter = PropertiesUtils.getInt(props, "clearGradientsPerIter", clearGradientsPerIter);
     saveIntermediate = PropertiesUtils.getBool(props, "saveIntermediate", saveIntermediate);
-    sgdTraining = PropertiesUtils.getBool(props, "sgdTraining", sgdTraining);
-    globalTraining = PropertiesUtils.getBool(props, "globalTraining", globalTraining);
-    nBeam = PropertiesUtils.getInt(props, "nBeam", nBeam);
-    earlyUpdate = PropertiesUtils.getBool(props, "earlyUpdate", globalTraining);
-    dExpDecaybase = PropertiesUtils.getDouble(props, "dExpDecaybase", dExpDecaybase);
-    bUseExpDecay = PropertiesUtils.getBool(props, "bUseExpDecay", bUseExpDecay);
-    bAggressiveUpdate = PropertiesUtils.getBool(props, "bAggressiveUpdate", bAggressiveUpdate);
-    bUsePretraining = PropertiesUtils.getBool(props, "bUsePretraining", bUsePretraining);
-    sBaseModel = PropertiesUtils.getString(props, "sBaseModel", sBaseModel);
-    nOracleDepth = PropertiesUtils.getInt(props, "nOracleDepth", nOracleDepth);
-    bWrongActionNanlysis  = PropertiesUtils.getBool(props, "bWrongActionNanlysis", bWrongActionNanlysis);
-    nMaxReviseActNum = PropertiesUtils.getInt(props, "nMaxReviseActNum", nMaxReviseActNum);
-    nHierarchyActTypeBeamSize = PropertiesUtils.getInt(props, "nHierarchyActTypeBeamSize", nHierarchyActTypeBeamSize);
-    nHierarchiyDepTypeBeamSize = PropertiesUtils.getInt(props, "nHierarchiyDepTypeBeamSize", nHierarchiyDepTypeBeamSize);
-    
-    
+
     // Runtime parsing options
     sentenceDelimiter = PropertiesUtils.getString(props, "sentenceDelimiter", sentenceDelimiter);
     tagger = PropertiesUtils.getString(props, "tagger.model", tagger);
