@@ -23,22 +23,22 @@ public class HierarchicalDepState implements Comparable{
 	HiddenLayer hiddenLayer = null;
 	
 	public HierarchicalDepState(Configuration c, int actType,
-			int depType, double score, double actTypeScore, double depTypeScore, HierarchicalDepState last, boolean bGold) {
+			int depType, double actTypeScore, double depTypeScore, HierarchicalDepState last, boolean bGold) {
 		
 		this.c = c;
 		this.actType = actType;
 		this.depType = depType;
-		this.score = score; // when generate the state, the score is the action type score
 		this.actTypeScore = actTypeScore;
 		this.depTypeScore = depTypeScore;
 		this.lastState = last;
 		this.bGold = bGold;
+		this.score = this.actTypeScore + this.depTypeScore; // when generate the state, the score is the action type score
 	}
 	
 	public HierarchicalDepState(double score, double actTypeScore, double depTypeScore, Configuration c, int actType,
 			int depType, HierarchicalDepState lastState, boolean bGold, int[] actTypeLabel, int[] depTypeLabel,
 			int[] featureArray, HiddenLayer hiddenLayer) {
-		super();
+
 		this.actTypeScore = actTypeScore;
 		this.depTypeScore = depTypeScore;
 		this.c = c;
@@ -59,14 +59,15 @@ public class HierarchicalDepState implements Comparable{
 	
 	public HierarchicalDepState getNewStateForExpandDepType(int depType2, double depTypeScore2, 
 			boolean bGold, int[] depTypeLabel2){
+		
 		HierarchicalDepState state =  new HierarchicalDepState(score, actTypeScore, 
 				depTypeScore2, c, actType,
 			depType2, lastState, bGold, actTypeLabel, depTypeLabel2,
 			featureArray, hiddenLayer);
-		state.score = state.depTypeScore + state.actTypeScore;
 		return state;
 		
 	}
+	
 	public void StateApply(ParsingSystem system){
 		
 		c = new Configuration(c);
@@ -78,7 +79,7 @@ public class HierarchicalDepState implements Comparable{
 		ArrayList<Pair<Integer, Integer>> retval = new ArrayList<Pair<Integer, Integer>>();
 		HierarchicalDepState statePtr = this;
 		while(statePtr.actType != -1){
-			retval.add( new Pair<Integer, Integer>(actType, depType) );
+			retval.add( new Pair<Integer, Integer>(statePtr.actType, statePtr.depType) );
 			statePtr = statePtr.lastState;
 		}
 		

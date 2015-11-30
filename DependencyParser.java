@@ -17,17 +17,20 @@ import edu.stanford.nlp.tagger.maxent.MaxentTagger;
 import edu.stanford.nlp.trees.EnglishGrammaticalStructure;
 import edu.stanford.nlp.trees.GrammaticalRelation;
 import edu.stanford.nlp.trees.GrammaticalStructure;
+import edu.stanford.nlp.trees.Tree;
 import edu.stanford.nlp.trees.TreeGraphNode;
 import edu.stanford.nlp.trees.TypedDependency;
 import edu.stanford.nlp.util.CoreMap;
 import edu.stanford.nlp.util.Pair;
 import edu.stanford.nlp.util.StringUtils;
 import edu.stanford.nlp.util.Timing;
+import edu.stanford.nlp.util.Triple;
 
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.Writer;
+import java.util.AbstractCollection;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -360,11 +363,12 @@ public class DependencyParser {
         	int[] depTypeLabel = system.getValidLabelGivenActType(c, oraclePair.first);
         	
         	actTypeLabel[oraclePair.first] = 1;
-        	depTypeLabel[oraclePair.second] = 1;
+        	if(depTypeLabel != null) depTypeLabel[oraclePair.second] = 1;
         	
         	List<Integer> feature = getFeatures(c);
 	          
-          examples.add(new Example(feature, intArrays2List(actTypeLabel), intArrays2List(depTypeLabel)));
+          examples.add(new Example(feature, intArrays2List(actTypeLabel), 
+        		  depTypeLabel == null ? null : intArrays2List(depTypeLabel)));
           oracles.add(oraclePair);
           for (int j = 0; j < feature.size(); ++j)
             tokPosCount.incrementCount(feature.get(j) * feature.size() + j);
@@ -937,17 +941,19 @@ public class DependencyParser {
             // prediction, we just do this once in #initialize
             classifier.preCompute();
 
-//            List<List<DependencyTree>> predictedBeam;
-//            if(config.globalTraining)
-//            	predictedBeam = devSents.stream().map(this::predictInnerWithBeam).collect(toList());
-//            else
+            List<List<DependencyTree>> predictedBeam;
+            List<DependencyTree> predicated = new ArrayList<>();
+            if(config.globalTraining){
+            	predictedBeam = devSents.stream().map(this::predictInnerWithBeam).collect(toList());
+            	for(int i = 0; i<predictedBeam.size(); i++)
+            		predicated.add(predictedBeam.get(i).get(0));
+            }
+            else
+            	predicated = devSents.stream().map(this::predictInner).collect(toList());
             
-//      	  system.evaluateOracle(devSents, predictedBeam, devTrees);
-//            for(int i = 0; i<predictedBeam.size(); i++)
-//            	predicated.add(predictedBeam.get(i).get(0));
+			//      	  system.evaluateOracle(devSents, predictedBeam, devTrees);
       	  
 
-            List<DependencyTree> predicated = devSents.stream().map(this::predictInner).collect(toList());
             double uas = system.getUASScore(devSents, predicated, devTrees);
             System.err.println("base model UAS: " + uas);
 
@@ -995,12 +1001,22 @@ public class DependencyParser {
         // Redo precomputation with updated weights. This is only
         // necessary because we're updating weights -- for normal
         // prediction, we just do this once in #initialize
-        classifier.preCompute();
-
-        List<DependencyTree> predicated = devSents.stream().map(this::predictInner).collect(toList());
-        double uas = system.getUASScore(devSents, predicated, devTrees);
-        System.err.println("UAS: " + uas);
-
+    	  
+    	  classifier.preCompute();
+    	  
+    	  List<List<DependencyTree>> predictedBeam;
+          List<DependencyTree> predicated = new ArrayList<>();
+          if(config.globalTraining){
+          	predictedBeam = devSents.stream().map(this::predictInnerWithBeam).collect(toList());
+          	for(int i = 0; i<predictedBeam.size(); i++)
+          		predicated.add(predictedBeam.get(i).get(0));
+          }
+          else
+          	predicated = devSents.stream().map(this::predictInner).collect(toList());
+          
+          double uas = system.getUASScore(devSents, predicated, devTrees);
+          System.err.println("base model UAS: " + uas);
+          
         if (config.saveIntermediate && uas > bestUAS) {
           System.err.printf("Exceeds best previous UAS of %f. Saving model file..%n", bestUAS);
 
@@ -2093,69 +2109,13 @@ private void wrongActAnalysis(CoreMap sentence, DependencyTree goldTree, PrintWr
    */
   private List<DependencyTree> predictInnerWithBeam(CoreMap sentence) {
 	  
-	  int nBeam = config.nBeam;
-	  int nSentSize = sentence.get(CoreAnnotations.TokensAnnotation.class).size();
-	  int nRound = nSentSize * 2 - 1;
-	  int nActNum = system.transitions.size();
-	  
-	  List<DepState> beam = new ArrayList<DepState>();
-	  Configuration c = system.initialConfiguration(sentence);
-	  if(system.canApply(c, system.transitions.get(nActNum-1))){
-		  system.apply(c, system.transitions.get(nActNum-1));
-	  }
-	  else{
-		  throw new RuntimeException("The first action is not SHIFT");
-	  }
-	  
-	  // only store the best beam candidates in decoding!
-	  beam.add(new DepState(c, system.transitions.size()-2, 0.0)) ;
-
-	  // the lattice to store states to be sorted
-	  List<DepState> lattice = new ArrayList<DepState>();
-    
-	  for(int i = 0; i < nRound; i++){
-		  lattice.clear();
-		  
-		  //begin to expand
-		  for(int j=0; j<beam.size(); j++ ){
-			  DepState beam_j = beam.get(j);
-			  double[] scores = classifier.computeScores(getFeatureArray( beam_j.c ));
-			  
-			  // do softmax
-			  softmax(scores, beam_j.c);
-			  
-			  // add all expanded candidates to lattice
-//			  System.err.println(j+" lattice###################################");
-			  for(int k = 0; k<nActNum; k++){
-				  if( system.canApply(beam_j.c, system.transitions.get(k)) ){
-					  lattice.add(new DepState(beam_j.c, k , beam_j.score + scores[k] ));
-//					  System.err.println(k+"# "+lattice.get(lattice.size()-1));
-				  }
-			  }
-		  }
-		  
-		  // sort the lattice
-		  Collections.sort(lattice);
-		  
-		  //add from lattice to beam
-		  beam.clear();
-		  beam.addAll(lattice.subList(0, nBeam > lattice.size() ? lattice.size() : nBeam));
-		  
-		  // Apply the action in DepState!
-//		  System.err.println("Round: "+i+"======================================================");
-		  for(DepState state : beam){
-			  state.StateApply(system);
-//			  System.err.println(state);
-		     
-		  }
-		  
-	  }
-    
+	  Triple<Double, Boolean, ActTypeBeam> predict = classifier.multiBeamDecoding(null, false, sentence, null);
 	  List<DependencyTree> retval = new ArrayList<DependencyTree>();
 	  // return the beam trees!
-	  for(int i = 0; i<beam.size(); i++){
-		  retval.add(beam.get(i).c.tree);
-	  }
+	  
+	  for( HierarchicalDepState state : predict.third.returnBeamStates() )
+		  retval.add(state.c.tree);
+		  
 	  return retval;
   }
   

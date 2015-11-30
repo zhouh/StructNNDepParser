@@ -1,7 +1,6 @@
 package nndep;
 
 import edu.stanford.nlp.ling.CoreAnnotations;
-import edu.stanford.nlp.ling.CoreAnnotations.PredictedAnswerAnnotation;
 import edu.stanford.nlp.util.CollectionUtils;
 import edu.stanford.nlp.util.CoreMap;
 import edu.stanford.nlp.util.Pair;
@@ -18,7 +17,6 @@ import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.IntStream;
 import java.util.ArrayList;
-import java.util.Arrays;
 
 import static java.util.stream.Collectors.toSet;
 
@@ -38,8 +36,6 @@ import static java.util.stream.Collectors.toSet;
  * , be sure to call {@link #finalizeTraining()} in order to allow the
  * classifier to clean up resources used during training.
  *
- * @author Danqi Chen
- * @author Jon Gauthier
  */
 public class Classifier {
 	// E: numFeatures x embeddingSize
@@ -450,7 +446,7 @@ public class Classifier {
 				int dtI = 0;
 				for (DepTypeBeam dtBeam : actTypeBeam) {
 					int sI = 0;
-					for (HierarchicalDepState state : dtBeam.bucket) {
+					for (HierarchicalDepState state : dtBeam) {
 						
 						actTypeUpdatePara[dtI][sI] = Math.exp(state.actTypeScore - bestATScore);
 						sumActTypeScores += actTypeUpdatePara[dtI][sI];
@@ -475,7 +471,7 @@ public class Classifier {
 				dtI = 0;
 				for (DepTypeBeam dtBeam : actTypeBeam) {
 					int sI = 0;
-					for (HierarchicalDepState state : dtBeam.bucket) {
+					for (HierarchicalDepState state : dtBeam) {
 						int t = state.bGold ? 1 : 0;
 						actTypeUpdatePara[dtI][sI] = actTypeUpdatePara[dtI][sI] / sumActTypeScores;
 						depTypeUpdatePara[dtI][sI] = depTypeUpdatePara[dtI][sI] / sumDepTypeScores;
@@ -501,13 +497,14 @@ public class Classifier {
 				dtI = 0;
 				for (DepTypeBeam dtBeam : actTypeBeam) {
 					int sI = 0;
-					for (HierarchicalDepState state : dtBeam.bucket) {
-						
+					for (HierarchicalDepState state : dtBeam) {
 						while(state.lastState != null){
+//							System.out.print(round++);
 							trainOneState(params, state, 
 									actTypeUpdatePara[dtI][sI], depTypeUpdatePara[dtI][sI]);
 							state = state.lastState;
 						}
+						System.out.println();
 						
 					}
 				}
@@ -529,8 +526,8 @@ public class Classifier {
 				double actTypeUpdatePara, double depTypeUpdatePara) {
 			
 			int[] features = state.lastState.featureArray;
-			double[] hidden = state.hiddenLayer.hidden;
-			double[] hidden3 = state.hiddenLayer.hidden3;
+			double[] hidden = state.lastState.hiddenLayer.hidden;
+			double[] hidden3 = state.lastState.hiddenLayer.hidden3;
 			double[] gradHidden3 = new double[config.hiddenSize];
 			double[] gradHidden = new double[config.hiddenSize];
 			int[] dropOut = state.lastState.hiddenLayer.dropOut;
@@ -1015,7 +1012,7 @@ public class Classifier {
 			CoreMap s, GlobalExample ex ){
 		
 		CoreMap sentence = bTrain ? ex.sent : s;
-		List<Pair<Integer, Integer>> oracles = ex.oracles;
+		List<Pair<Integer, Integer>> oracles = bTrain ? ex.oracles : null;
 
 		/*
 		 * Begin to decode!
@@ -1031,7 +1028,7 @@ public class Classifier {
 		Configuration c = system.initialConfiguration(sentence);
 
 		// only store the best beam candidates in decoding!
-		HierarchicalDepState initialState = new HierarchicalDepState(c, -1, -1, 0.0, 0.0, 0.0, null, true);
+		HierarchicalDepState initialState = new HierarchicalDepState(c, -1, -1, 0.0, 0.0, null, true);
 		DepTypeBeam depTypeBeam = new DepTypeBeam(nDepTypeBeamSize);
 		ActTypeBeam actTypeBeam = new ActTypeBeam(nActTypeBeamSize);
 		ActTypeBeam actTypeBeamAfterExpand = new ActTypeBeam(nActTypeBeamSize);
@@ -1060,7 +1057,8 @@ public class Classifier {
 														// in beam
 
 				DepTypeBeam[] expandedDepTypeBeams = new DepTypeBeam[ParsingSystem.nActTypeNum];
-
+				
+				
 				for (int i = 0; i < expandedDepTypeBeams.length; i++)
 					expandedDepTypeBeams[i] = new DepTypeBeam(nDepTypeBeamSize);
 
@@ -1073,8 +1071,7 @@ public class Classifier {
 					int[] actTypeLabel = system.getValidActType(state.c);
 					double[] actLayerScore = getActTypeLayer(bTrain, hiddenLayer, actTypeLabel);
 
-					if(bTrain)	// only in training, we need these paras for updating
-						state.setParas(hiddenLayer, actTypeLabel, featureArray);
+					state.setParas(hiddenLayer, actTypeLabel, featureArray);
 
 					/*
 					 * for every action type
@@ -1094,7 +1091,6 @@ public class Classifier {
 									state.c, 
 									actTypeI,
 									-1,
-									state.score, 
 									state.actTypeScore + actLayerScore[actTypeI], 
 									state.depTypeScore,
 									state, 
@@ -1104,7 +1100,6 @@ public class Classifier {
 									state.c, 
 									actTypeI,
 									-1,
-									state.score, 
 									state.actTypeScore + actLayerScore[actTypeI], 
 									state.depTypeScore,
 									state, 
@@ -1116,7 +1111,8 @@ public class Classifier {
 
 				// add expanded depType beam into new act type beam
 				for (DepTypeBeam db : expandedDepTypeBeams)
-					actTypeBeamAfterExpand.insert(db);
+					if(db.bucket.size() != 0) 
+						actTypeBeamAfterExpand.insert(db);
 			}
 
 			// second, expand all the states in the pruned act type beam
@@ -1124,19 +1120,18 @@ public class Classifier {
 			int nDepTypeNum = system.labels.size();
 			for (DepTypeBeam dtBeam : actTypeBeamAfterExpand) {
 
-				boolean bLastActShift = false;
 				for (HierarchicalDepState state : dtBeam.bucket) {
 
 					int givenActType = state.actType;
 					if (givenActType == ParsingSystem.shiftActTypeID) { // if last action is
 																        // shift, then skip
-						bLastActShift = true;
-						break;
+						dtBeam.insert(state);
+						continue;
 					}
 
 					// get dep type layer for every state
 					int[] depTypeLabel = system.getValidLabelGivenActType(state.c, givenActType);
-					double[] detTypeScores = getDepTypeLayer(bTrain, givenActType, state.hiddenLayer,
+					double[] detTypeScores = getDepTypeLayer(bTrain, givenActType, state.lastState.hiddenLayer,
 							depTypeLabel);
 
 					for (int depTypeI = 0; depTypeI < nDepTypeNum; depTypeI++) {
@@ -1157,18 +1152,10 @@ public class Classifier {
 
 						dtBeam.insert(newState);
 					}
+					
 				}
+				dtBeam.bucket.clear();
 
-				if (bLastActShift)
-					continue;
-			}
-
-			// early update
-			if (bTrain && config.earlyUpdate) {
-				if (!actTypeBeamAfterExpand.containGold()) {
-					updateEarly = true;
-					break;
-				}
 			}
 
 			// apply these states, lazy expand
@@ -1176,12 +1163,28 @@ public class Classifier {
 				for (HierarchicalDepState state : dtBeam)
 					state.StateApply(system);
 
-			actTypeBeam.clearAll();
+			ActTypeBeam tmp = actTypeBeam;
 			actTypeBeam = actTypeBeamAfterExpand;
+			actTypeBeamAfterExpand = tmp;
+			actTypeBeamAfterExpand.clearAll();
+			
+			System.out.print(ri + " ");
+//			actTypeBeam.display();
+			
+			// early update
+			if (bTrain && config.earlyUpdate) {
+				if (!actTypeBeam.containGold()) {
+					updateEarly = true;
+					break;
+				}
+			}
 
 		} // end nRound
 
-		int correct = (ri / nSentSize / params.batchSize) / 2;
+		Double correct = 0.0;
+		
+		if(bTrain)
+			correct = ((double)ri / nSentSize / params.batchSize) / 2;
 
 		return new Triple(correct, updateEarly, actTypeBeam);
 		
@@ -1397,22 +1400,37 @@ public class Classifier {
 
 				// Only extract activations for those nodes which are still
 				// activated (`ls`)
-				for (int nodeIndex : ls)
-					hidden[nodeIndex] += saved[id][nodeIndex];
+				if(bTrain)
+					for (int nodeIndex : ls)
+						hidden[nodeIndex] += saved[id][nodeIndex];
+				else
+					for(int h = 0; h < config.hiddenSize; h++)
+						hidden[h] += saved[id][h];
 			} else {
-				for (int nodeIndex : ls) {
-					for (int k = 0; k < config.embeddingSize; ++k)
-						hidden[nodeIndex] += W1[nodeIndex][offset + k] * E[tok][k];
-				}
+				if(bTrain)
+					for (int nodeIndex : ls) 
+						for (int k = 0; k < config.embeddingSize; ++k)
+							hidden[nodeIndex] += W1[nodeIndex][offset + k] * E[tok][k];
+				else
+					for(int h = 0; h < config.hiddenSize; h++)
+						for (int k = 0; k < config.embeddingSize; ++k)
+							hidden[h] += W1[h][offset + k] * E[tok][k];
+				
 			}
 			offset += config.embeddingSize;
 		}
 
 		// Add bias term and apply activation function
-		for (int nodeIndex : ls) {
-			hidden[nodeIndex] += b1[nodeIndex];
-			hidden3[nodeIndex] = Math.pow(hidden[nodeIndex], 3);
-		}
+		if(bTrain)
+			for (int nodeIndex : ls) {
+				hidden[nodeIndex] += b1[nodeIndex];
+				hidden3[nodeIndex] = Math.pow(hidden[nodeIndex], 3);
+			}
+		else
+			for(int h = 0; h < config.hiddenSize; h++){
+				hidden[h] += b1[h];
+				hidden3[h] = Math.pow(hidden[h], 3);
+			}
 
 		return new HiddenLayer(hidden, hidden3, ls);
 

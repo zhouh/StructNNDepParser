@@ -1,6 +1,8 @@
 package nndep;
 
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.List;
 import java.util.concurrent.PriorityBlockingQueue;
 
 /**
@@ -90,6 +92,33 @@ private static final long serialVersionUID = 1L;
 		
 			
 		return bestState;
+	}
+
+	public List<HierarchicalDepState> returnBeamStates() {
+
+		List<HierarchicalDepState> retval = new ArrayList<>();
+		for(DepTypeBeam dtBeam : this)
+			for( HierarchicalDepState state : dtBeam )
+				retval.add(state);
+		return retval;
+		
+	}
+	
+	public void display(){
+		int i = 0;
+		int j = 0;
+		System.out.println("======================");
+		for(DepTypeBeam dtBeam : this){
+			System.out.println(i++ +" :");
+			j = 0;
+			System.out.println("-----");
+			for(HierarchicalDepState state : dtBeam){
+				System.out.println((i-1) +"-"+ j++ + " "+state.bGold);
+				System.out.println(state.actionSequence());
+				System.out.println(state.score + "\t"+ state.actTypeScore + "\t"+state.depTypeScore);
+			}
+			
+		}
 	}
 	
 }  
