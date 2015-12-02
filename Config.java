@@ -188,6 +188,12 @@ public class Config
    */
   public int nBeam = 8;
   
+  /**
+   * multi-beam size
+   */
+  public int nActTypeBeam = 16;
+  public int nDepTypeBeam = 4;
+  
   /*
    *  whether to update if get the right dependency tree 
    */
@@ -197,6 +203,12 @@ public class Config
    *  load pretraining model!
    */
   public boolean bUsePretraining = false;
+  
+  /**
+   * get more update examples before updating.
+   * Using the states before lazy update pruning!
+   */
+  public boolean bMoreUpdatingExamples = true;
 
   /**
    *   margin used in max-margin update!
@@ -266,6 +278,9 @@ public class Config
     bAggressiveUpdate = PropertiesUtils.getBool(props, "bAggressiveUpdate", bAggressiveUpdate);
     bUsePretraining = PropertiesUtils.getBool(props, "bUsePretraining", bUsePretraining);
     sBaseModel = PropertiesUtils.getString(props, "sBaseModel", sBaseModel);
+    nActTypeBeam = PropertiesUtils.getInt(props, "nActTypeBeam", nActTypeBeam);
+    nDepTypeBeam = PropertiesUtils.getInt(props, "nDepTypeBeam", nDepTypeBeam);
+    bMoreUpdatingExamples = PropertiesUtils.getBool(props, "bMoreUpdatingExamples", bMoreUpdatingExamples);
     
     // Runtime parsing options
     sentenceDelimiter = PropertiesUtils.getString(props, "sentenceDelimiter", sentenceDelimiter);

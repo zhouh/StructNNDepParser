@@ -22,6 +22,7 @@ import edu.stanford.nlp.trees.TypedDependency;
 import edu.stanford.nlp.util.CoreMap;
 import edu.stanford.nlp.util.StringUtils;
 import edu.stanford.nlp.util.Timing;
+import edu.stanford.nlp.util.Triple;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -905,7 +906,7 @@ public class DependencyParser {
         classifier.preCompute();
 
         List<List<DependencyTree>> predictedBeam = devSents.stream().map(this::predictInnerWithBeam).collect(toList());
-  	  system.evaluateOracle(devSents, predictedBeam, devTrees);
+//  	  system.evaluateOracle(devSents, predictedBeam, devTrees);
   	  
   	  List<DependencyTree> predicated = new ArrayList<DependencyTree>();
   	  for(int i = 0; i<predictedBeam.size(); i++)
@@ -1371,113 +1372,15 @@ public class DependencyParser {
    */
   private List<DependencyTree> predictInnerWithBeam(CoreMap sentence) {
 	  
-	  int nBeam = config.nBeam;
-	  int nSentSize = sentence.get(CoreAnnotations.TokensAnnotation.class).size();
-	  int nRound = nSentSize * 2 - 1;
-	  int nActNum = system.transitions.size();
-	  
-	  List<DepState> beam = new ArrayList<DepState>();
-	  Configuration c = system.initialConfiguration(sentence);
-	  if(system.canApply(c, system.transitions.get(nActNum-1))){
-		  system.apply(c, system.transitions.get(nActNum-1));
-	  }
-	  else{
-		  throw new RuntimeException("The first action is not SHIFT");
-	  }
-	  
-	  // only store the best beam candidates in decoding!
-	  beam.add(new DepState(c, system.transitions.size()-2, 0.0)) ;
-
-	  // the lattice to store states to be sorted
-	  List<DepState> lattice = new ArrayList<DepState>();
-    
-	  for(int i = 0; i < nRound; i++){
-		  lattice.clear();
-		  
-		  //begin to expand
-		  for(int j=0; j<beam.size(); j++ ){
-			  DepState beam_j = beam.get(j);
-			  double[] scores = classifier.computeScores(getFeatureArray( beam_j.c ));
-			  
-			  // do softmax
-			  softmax(scores, beam_j.c);
-			  
-			  // add all expanded candidates to lattice
-//			  System.err.println(j+" lattice###################################");
-			  for(int k = 0; k<nActNum; k++){
-				  if( system.canApply(beam_j.c, system.transitions.get(k)) ){
-					  lattice.add(new DepState(beam_j.c, k , beam_j.score + scores[k] ));
-//					  System.err.println(k+"# "+lattice.get(lattice.size()-1));
-				  }
-			  }
-		  }
-		  
-		  // sort the lattice
-		  Collections.sort(lattice);
-		  
-		  //add from lattice to beam
-		  beam.clear();
-		  beam.addAll(lattice.subList(0, nBeam > lattice.size() ? lattice.size() : nBeam));
-		  
-		  // Apply the action in DepState!
-//		  System.err.println("Round: "+i+"======================================================");
-		  for(DepState state : beam){
-			  state.StateApply(system);
-//			  System.err.println(state);
-		     
-		  }
-		  
-	  }
+	  Triple<Double, HierarchicalDepState, ArrayList<ArrayList<HierarchicalDepState>>> result = classifier.multiBeamDecoding(null, false, sentence, null);
     
 	  List<DependencyTree> retval = new ArrayList<DependencyTree>();
 	  // return the beam trees!
-	  for(int i = 0; i<beam.size(); i++){
-		  retval.add(beam.get(i).c.tree);
-	  }
+	  
+	  retval.add(result.second.c.tree);
 	  return retval;
   }
   
-  
-  public List<Integer> softmax(double[] scores, Configuration c) {
-	// TODO Auto-generated method stub
-	 
-	  int numLabels = system.transitions.size();
-	  double maxscore = -1000;
-	  int maxId = -1;
-	  ArrayList<Integer> label = new ArrayList<Integer>(system.transitions.size());
-	  
-	  for(int i = 0; i<numLabels; i++){
-		  if(system.canApply(c, system.transitions.get(i))){
-			  label.add(0);
-			  if(maxId==-1 || scores[i]>maxscore){
-				  maxId=i;
-				  maxscore=scores[i];
-			  }
-		  }
-		  else {
-			label.add(-1);
-		}
-	  }
-	  
-	  /*
-	     *   Do soft max!
-	     */
-	    double sum2 = 0.0;	//sum of scores of all actions after softmax  
-//	    double maxScore = scores[maxId];
-//	    
-//	    for (int i = 0; i < numLabels; ++i) {
-//	      if (label.get(i)>= 0) {
-//	    	  
-//	        scores[i] = Math.exp(scores[i] - maxScore);
-//	        sum2 += scores[i];
-//	      }
-//	    }
-//	    for(int i =0; i<numLabels;i++)
-//	    	if(label.get(i) != -1)
-//	    		scores[i]=Math.log(scores[i]/sum2);  //out put the log of probability
-	    
-	    return label;
-}
 
 private void beamDecode(String testFile, String outFile) {
 

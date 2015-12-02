@@ -60,6 +60,14 @@ public abstract class ParsingSystem {
   public void apply(Configuration c, int t){
 	  apply(c, transitions.get(t));
   }
+  
+  /*
+   * hierarchical dep action paras
+   */
+  public int nActTypeNum, nDepTypeNum, nShiftID, nLeftID, nRightID;
+  
+  public abstract int getHierarchicalActID(int actType, int depType);
+	  
 
   /**
    * Provide a static-oracle recommendation for the next parsing step

@@ -4,6 +4,7 @@ import edu.stanford.nlp.ling.CoreAnnotations;
 import edu.stanford.nlp.util.CollectionUtils;
 import edu.stanford.nlp.util.CoreMap;
 import edu.stanford.nlp.util.Pair;
+import edu.stanford.nlp.util.Triple;
 import edu.stanford.nlp.util.concurrent.MulticoreWrapper;
 import edu.stanford.nlp.util.concurrent.ThreadsafeProcessor;
 
@@ -206,154 +207,25 @@ public class Classifier {
 
       for (GlobalExample ex : examples) {
     	  
-    	  CoreMap sentence = ex.sent;
-    	  List<Integer>goldActs = ex.acts;
+    	  Triple<Double, HierarchicalDepState, ArrayList<ArrayList<HierarchicalDepState>>> decodingResult = 
+    			  multiBeamDecoding(params, true, null, ex);
     	  
-//    	  System.out.println("new examples!");
-    	  
-    	  /*
-    	   *   Begin to decode!
-    	   */
-    	  int nBeam = config.nBeam;
-    	  int nSentSize = sentence.get(CoreAnnotations.TokensAnnotation.class).size();
-    	  int nRound = nSentSize * 2;
-    	  int nActNum = system.transitions.size();
-    	  boolean updateEarly = false; //whether this example execute early update
-    	  ThreadLocalRandom random = ThreadLocalRandom.current();
-    	 
-    	  
-//    	  List<DepState> beam = new ArrayList<DepState>();
-    	  Configuration c = system.initialConfiguration(sentence);
-    	 // if(system.canApply(c, system.transitions.get(nActNum-1))){
-    	//	  system.apply(c, system.transitions.get(nActNum-1));
-    	 // }
-    	 // else{
-    	//	  throw new RuntimeException("The first action is not SHIFT");
-    	  //}
-    	  
-    	  // only store the best beam candidates in decoding!
-    	  DepState initialState = new DepState(c, -1, 0.0);
-    	  Beam beam = new Beam(nBeam);
-    	  beam.insert(initialState);
-
-    	  // the lattice to store states to be sorted
-    	  ArrayList<ArrayList<DepState>> beamLattice = new ArrayList<ArrayList<DepState>>();
-        
-    	  // begin to do nRound-th action
-    	  for(int i = 0; i < nRound; i++){
-    		  
-//    		  System.err.println("round###################################");
-    		  beamLattice.clear();
-    		  int goldAct = goldActs.get(i);
-    		  
-    		  //begin to expand
-    		  boolean beamLatticeGold = false;
-    		  for(DepState beam_j : beam){
-    			  int[] dropOutArray = IntStream.range(0, config.hiddenSize)
-                          .filter(n -> random.nextDouble() > params.getDropOutProb())
-                          .toArray();
-    			  int[] featureArray = parser.getFeatureArray( beam_j.c );
-    			  double[] scores = computeScoresInTraining(featureArray, preMap, dropOutArray);
-    			  
-    			  // do softmax
-    			  //but in sentence level log-likelihood, we do not do softmax in every step!
-    			  //so the softmax is only return the label array!
-    			  List<Integer> predictLabel = parser.softmax(scores, beam_j.c);
-    			  
-    			  beam_j.setLabel(predictLabel);
-    			  beam_j.setDropOutArray(dropOutArray);
-    			  beam_j.setFeatureArray(featureArray);
-    			  
-    			  // add all expanded candidates to lattice
-//    			  System.err.println(j+" lattice###################################");
-    			  ArrayList<DepState> beamItem = new ArrayList<DepState>();  // states in beamItem are
-    			  															 // expanded from the same state 
-    			  for(int k = 0; k<nActNum; k++){
-    				  if( predictLabel.get(k) != -1 ){
-    					  DepState expandState = new DepState(beam_j.c, k , beam_j.score + scores[k], beam_j, 
-    							  beam_j.bGold && k==goldAct );
-    					  beamItem.add(expandState);
-    					  beamLatticeGold = beamLatticeGold || expandState.bGold;
-//    					  System.err.println(k+"# "+lattice.get(lattice.size()-1));
-    				  }
-    			  }
-    			  
-    			  if(beamItem.size() != 0)
-    				  beamLattice.add(beamItem);
-    		  }
-    		  
-//    		  if(!beamLatticeGold)
-//    			  System.out.println("");
-    		  
-    		  //add from lattice to beam
-    		  beam = new Beam(nBeam);
-    		  for(ArrayList<DepState> beamLatticeItem : beamLattice)
-    			  for(DepState state : beamLatticeItem)
-    				  beam.insert(state);
-    		  
-    		  // apply these states, lazy expand
-    		  for(DepState state : beam){
-    			  state.StateApply(system);
-    			  //print for debug
-//    			  System.err.println(nRound+"\t"+beam_index++ +"\t"+state.toString());
-//    			  System.err.println(state.actionSequence());
-    		  }
-    		  
-    		  //early update
-    		  if(!beam.beamGold()){
-    				  updateEarly = true;
-    				  break;
-    		   }
-    		  
-    	  } //end nRound
-    	  
-    	  DepState predictState = beam.maxScoreState;
-    	  List<Integer> predictActs = predictState.actionSequence();
-    	  
-    	  //get the first disagreement  of two action sequences
-//    	  int firstDisAgreePos = -1;
-//    	  for(int i = 0; i < predictActs.size(); i++){
-//    		  if(goldActs.get(i) != predictActs.get(i) ){
-//    			  firstDisAgreePos = i;
-//    			  break;
-//    		  }
-//    	  }
-    	  
-    	  correct += ((double)predictActs.size()/nSentSize/params.batchSize)/2;
-    	  
-    	  /*
-    	   *   if two actions sequence is the same, do not update!
-    	   *   #TODO but we could choose max-margin loss, and always update!
-    	   */
-//    	  if(firstDisAgreePos == -1)
-//    		  continue;
-    	  
-    	  /*
-    	   *   print action sequence
-    	   */
-//    	  System.err.println("gold action sequence: "+goldActs);
-//    	  System.err.println("predict action sequence: "+predictActs);
-
-    	  /*
-    	   *   Begin to train!
-    	   */
-    	  
-    	  //softmax the whole beam candidates!
-    	  
-    	  
+    	  HierarchicalDepState predictState = decodingResult.second;
+    	  ArrayList<ArrayList<HierarchicalDepState>> beamLattice = decodingResult.third;
+    	  correct += decodingResult.first;
     	  // the parameter for training
-		  if(!config.bAggressiveUpdate && !updateEarly){
-			  if(beam.maxScoreState.bGold)
-				  continue;  //skip update if predict right!
-		  }
+    	  if(predictState.bGold)
+    		  continue;  //skip update if predict right!
 	
-		  double[][] gradients = new double[beam.size()][nActNum];
-		  double[] totalGradients = new double[beam.size()];
+    	  int nActNum = system.transitions.size();
+    	  int totalBeamSize = config.nActTypeBeam * config.nDepTypeBeam;
+		  double[][] gradients = new double[totalBeamSize][nActNum];
+		  double[] totalGradients = new double[totalBeamSize];
 		  
 		  double sum =0;
-		  double maxVal = beam.maxScoreState.score;  //get the max score
+		  double maxVal = predictState.score;  //get the max score
 		  for(int i = 0; i < beamLattice.size(); i++){
-			  ArrayList<DepState> beamLatticeItem = beamLattice.get(i);
+			  ArrayList<HierarchicalDepState> beamLatticeItem = beamLattice.get(i);
 			  
 			  for(int j = 0; j < beamLatticeItem.size(); j++){
 				  int act = beamLatticeItem.get(j).act;
@@ -365,12 +237,12 @@ public class Classifier {
 		  /*
 		   * copy a un-normalized gradients arrays
 		   */
-		  double[][] gradientsUnNormal = new double[beam.size()][nActNum];
+		  double[][] gradientsUnNormal = new double[totalBeamSize][nActNum];
 		  for(int gi = 0; gi < gradients.length; gi++)
 			  gradientsUnNormal[gi] = Arrays.copyOf(gradients[gi], gradients[gi].length);
 		  
 		  for(int i = 0; i < beamLattice.size(); i++){
-			  ArrayList<DepState> beamLatticeItem = beamLattice.get(i);
+			  ArrayList<HierarchicalDepState> beamLatticeItem = beamLattice.get(i);
 			  for(int j = 0; j < beamLatticeItem.size(); j++){
 				  int act = beamLatticeItem.get(j).act;
 				  
@@ -395,9 +267,11 @@ public class Classifier {
     		   *   training k-best candidates in the beam
     		   */
     		  for(int k = 0; k<beamLattice.size(); k++){
-    			  DepState beamState = beamLattice.get(k).get(0);
     			  
-    			  for(int i = 0; i<predictActs.size(); i++){
+    			  HierarchicalDepState beamState = beamLattice.get(k).get(0);
+    			  
+    			  boolean bLastState = true;
+    			  while(beamState.lastState != null){
     			  
     				  //get right predict label
     				  if(beamState.act == -1)
@@ -407,12 +281,12 @@ public class Classifier {
     				  label.set(beamState.act, 1);
     				  //update predict
     				  
-    				  if(i == 0)
-    					  trainFeatures(params, beamState.lastState.featureArray, label, 
-    						  false, 0, beamState.lastState.dropOutArray, gradients[k]);
+    				  if(bLastState){
+    					  trainOneState(params, beamState, 0, gradients[k]);
+    				  }
     				  else
-    					  trainFeatures(params, beamState.lastState.featureArray, label, 
-        						  false, totalGradients[k], beamState.lastState.dropOutArray, null);
+    					  trainOneState(params, beamState, totalGradients[k], null);
+    				  bLastState = false;
     				  
     				  //set the label back for next use!
     				  label.set(beamState.act, 0);
@@ -431,70 +305,28 @@ public class Classifier {
      * @param feature
      * @param bGold
      */
-    public void trainFeatures( FeedforwardParams params, int[] feature, List<Integer> label, 
-    		boolean bGold, double expDecay, int[] dropOutArray, double[] gradients){
+    public void trainOneState( FeedforwardParams params, HierarchicalDepState state, double totalGrad, double[] gradients){
     	
-    	double[] scores = new double[numLabels];
-        double[] hidden = new double[config.hiddenSize];
-        double[] hidden3 = new double[config.hiddenSize];
+    	int[] features = state.lastState.featureArray;
+		double[] hidden = state.lastState.hiddenLayer.hidden;
+		double[] hidden3 = state.lastState.hiddenLayer.hidden3;
+		double[] gradHidden3 = new double[config.hiddenSize];
+		double[] gradHidden = new double[config.hiddenSize];
+		int[] dropOut = state.lastState.hiddenLayer.dropOut;
+		int optAct = state.act;
+		List<Integer> label = state.lastState.labels;
         
         // We can't fix the seed used with ThreadLocalRandom
         // TODO: Is this a serious problem?
 
         // Run dropout: randomly drop some hidden-layer units. `ls`
         // contains the indices of those units which are still active
-        int[] ls = dropOutArray;
+        int[] ls = dropOut;
 
-        int offset = 0;
-        for (int j = 0; j < config.numTokens; ++j) {
-          int tok = feature[j];
-          int index = tok * config.numTokens + j;
-
-          if (preMap.containsKey(index)) {
-            // Unit activations for this input feature value have been
-            // precomputed
-            int id = preMap.get(index);
-
-            // Only extract activations for those nodes which are still
-            // activated (`ls`)
-            for (int nodeIndex : ls)
-              hidden[nodeIndex] += saved[id][nodeIndex];
-          } else {
-            for (int nodeIndex : ls) {
-              for (int k = 0; k < config.embeddingSize; ++k)
-                hidden[nodeIndex] += W1[nodeIndex][offset + k] * E[tok][k];
-            }
-          }
-          offset += config.embeddingSize;
-        }
-
-        // Add bias term and apply activation function
-        for (int nodeIndex : ls) {
-          hidden[nodeIndex] += b1[nodeIndex];
-          hidden3[nodeIndex] = Math.pow(hidden[nodeIndex], 3);
-        }
-
-        /* 
-         * in training, we only need to get the final score, we only need to 
-         * get the hidden and compute gradients
-         * 
-         */
-//        // Feed forward to softmax layer (no activation yet)
-//        for (int i = 0; i < numLabels; ++i) {
-//          if (label.get(i) >= 0) {
-//            for (int nodeIndex : ls)
-//              scores[i] += W2[i][nodeIndex] * hidden3[nodeIndex];
-//          }
-//        }
-        
-        /*
-         *   get the error array!
-         */
-        double[] gradHidden3 = new double[config.hiddenSize];
         for (int i = 0; i < numLabels; ++i)
           if ( (gradients != null && label.get(i) != -1) || label.get(i) == 1) {
         	  
-        	  double delta =  (gradients != null ? gradients[i] : expDecay) / params.getBatchSize(); 
+        	  double delta =  (gradients != null ? gradients[i] : totalGrad) / params.getBatchSize(); 
         	  //cross entropy loss
             for (int nodeIndex : ls) {
               gradW2[i][nodeIndex] += delta * hidden3[nodeIndex];
@@ -503,15 +335,14 @@ public class Classifier {
           }
           
 
-        double[] gradHidden = new double[config.hiddenSize];
         for (int nodeIndex : ls) {
           gradHidden[nodeIndex] = gradHidden3[nodeIndex] * 3 * hidden[nodeIndex] * hidden[nodeIndex];
           gradb1[nodeIndex] += gradHidden3[nodeIndex];
         }
 
-        offset = 0;
+        int offset = 0;
         for (int j = 0; j < config.numTokens; ++j) {
-          int tok = feature[j];
+          int tok = features[j];
           int index = tok * config.numTokens + j;
           if (preMap.containsKey(index)) {
             int id = preMap.get(index);
@@ -1259,6 +1090,215 @@ public class Classifier {
   private static void addInPlace(double[] a1, double[] a2) {
     for (int i = 0; i < a1.length; i++)
       a1[i] += a2[i];
+  }
+  
+  /**
+   * decoding function of the multi-beam parsing
+   * 
+   */
+  public Triple< Double, HierarchicalDepState, ArrayList<ArrayList<HierarchicalDepState>> > 
+  multiBeamDecoding( FeedforwardParams params, boolean bTrain, 
+			CoreMap s, GlobalExample ex ){
+	  
+	  CoreMap sentence = bTrain ? ex.sent : s;
+	  List<Integer>goldActs = bTrain ? ex.acts : null;
+	  
+//	  System.out.println("new examples!");
+	  
+	  /*
+	   *   Begin to decode!
+	   */
+	  int nActTypeBeamSize = config.nActTypeBeam;
+	  int nDepTypeBeamSize = config.nDepTypeBeam;
+	  int nSentSize = sentence.get(CoreAnnotations.TokensAnnotation.class).size();
+	  int nRound = nSentSize * 2;
+	  
+	  Configuration c = system.initialConfiguration(sentence);
+	  
+	  
+	  // only store the best beam candidates in decoding!
+	  HierarchicalDepState initialState = new HierarchicalDepState(c, -1, 0.0, null, true);
+	  
+	  DepTypeBeam depTypeBeam = new DepTypeBeam(nDepTypeBeamSize);
+	  ActTypeBeam actTypeBeam = new ActTypeBeam(nActTypeBeamSize);
+	  ActTypeBeam actTypeBeamAfterExpand = new ActTypeBeam(nActTypeBeamSize);
+	  actTypeBeamAfterExpand.clearAll();
+	  depTypeBeam.insert(initialState);
+	  actTypeBeam.insert(depTypeBeam);
+		
+	  // the lattice to store states to be sorted
+	  ArrayList<ArrayList<HierarchicalDepState>> beamLattice = new ArrayList<ArrayList<HierarchicalDepState>>();
+    
+	  // begin to do nRound-th action
+	  int i ;
+	  for(i = 0; i < nRound; i++){
+		  
+//		  System.err.println("round###################################");
+		  beamLattice.clear();
+		  int goldAct = bTrain ? goldActs.get(i) : -1;
+		  
+		  for(DepTypeBeam dtBeam : actTypeBeam){
+			  
+			  /*
+			   * new acttypeNum size deptype beams for interting
+			   */
+			  DepTypeBeam[] expandedDepTypeBeams = new DepTypeBeam[system.nActTypeNum];
+				for (int at = 0; at < expandedDepTypeBeams.length; at++)
+					expandedDepTypeBeams[at] = new DepTypeBeam(nDepTypeBeamSize);
+
+				for(HierarchicalDepState beamState : dtBeam){
+				  
+					/*
+					 * compute for the beam state
+					 */
+					int[] featureArray = parser.getFeatureArray( beamState.c );
+					HiddenLayer hiddenLayer = getHidden(bTrain, featureArray, beamState.c);
+					List<Integer> validLabels = getValidLabels(beamState.c);
+					double[] scores = getOutputLayer(bTrain, hiddenLayer, validLabels);
+					beamState.setLabel(validLabels);
+					beamState.setFeatureArray(featureArray);
+					beamState.setHidden(hiddenLayer);
+					
+					ArrayList<HierarchicalDepState> beamItem = new ArrayList<HierarchicalDepState>(); // record for more examples updating
+					
+					/*
+					 * begin to expand
+					 */
+					for(int actID = 0; actID < system.nActTypeNum; actID++){
+						
+						for (int depID = 0; depID < system.nDepTypeNum; depID++) {
+							
+							int hieActID = system.getHierarchicalActID(actID, depID);
+							if(hieActID == -1) continue; // only shift deptype = 0 is valid
+							
+							if( validLabels.get(hieActID) != -1 ){
+								HierarchicalDepState expandState = new HierarchicalDepState(beamState.c, hieActID, 
+										beamState.score + scores[hieActID], 
+										beamState, 
+										beamState.bGold && hieActID==goldAct );
+								
+								expandedDepTypeBeams[actID].insert(expandState);
+								beamItem.add(expandState);
+							}
+							
+						}
+					}
+					
+			  
+					if(beamItem.size() != 0)
+						beamLattice.add(beamItem);
+				}
+				
+				for (DepTypeBeam b : expandedDepTypeBeams) 
+					if(b.size() != 0) 
+						actTypeBeamAfterExpand.insert(b);
+				
+		  }
+		  
+		  // apply these states, lazy expand
+
+		  for (DepTypeBeam dtb : actTypeBeamAfterExpand) {
+			  for (HierarchicalDepState state : dtb) {
+				  state.StateApply(system);
+			  }
+		  }
+		  
+		  ActTypeBeam tmp = actTypeBeam;
+		  actTypeBeam = actTypeBeamAfterExpand;
+		  actTypeBeamAfterExpand = tmp;
+		  actTypeBeamAfterExpand.clearAll();
+			
+		  //early update
+		  if(!actTypeBeam.containGold() && bTrain){
+				  break;
+		   }
+		  
+	  } //end nRound
+	  
+//	  System.out.println(i);
+	  double correct = bTrain ?  ((double)i/nSentSize/params.batchSize)/2 : 0;
+	  
+	  return new Triple<Double, HierarchicalDepState, ArrayList<ArrayList<HierarchicalDepState>> >(correct, actTypeBeam.getBestState(), beamLattice);
+	  
+  }
+  
+  public List<Integer> getValidLabels(Configuration c) {
+		// TODO Auto-generated method stub
+		 
+		  int numLabels = system.transitions.size();
+		  ArrayList<Integer> label = new ArrayList<Integer>(system.transitions.size());
+		  
+		  for(int i = 0; i<numLabels; i++){
+			  if(system.canApply(c, system.transitions.get(i))){
+				  label.add(0);
+			  }
+			  else {
+				label.add(-1);
+			}
+		  }
+		  
+		    return label;
+	}
+  
+  private double[] getOutputLayer(boolean bTrain, HiddenLayer hiddenLayer, List<Integer> validabel){
+	  
+	  double[] scores = new double[numLabels];
+      for (int i = 0; i < numLabels; ++i) {
+    	  if(validabel.get(i) >= 0)
+    		  for (int nodeIndex : hiddenLayer.dropOut)
+    			  scores[i] += W2[i][nodeIndex] * hiddenLayer.hidden3[nodeIndex];
+    		  
+      }
+      
+      return scores;
+  }
+  
+  /**
+   * compute the hidden layer of a given state!
+   * 
+   */
+  private HiddenLayer getHidden(boolean bTrain, int[] feature, Configuration c){
+	  double[] hidden = new double[config.hiddenSize];
+	  double[] hidden3 = new double[config.hiddenSize];
+	  
+	  ThreadLocalRandom random = ThreadLocalRandom.current();
+	  
+	  int[] ls = null;
+		if(bTrain)
+			ls = IntStream.range(0, config.hiddenSize).filter(n -> random.nextDouble() > config.dropProb).toArray();
+		else
+			ls = IntStream.range(0, config.hiddenSize).toArray();
+		
+      int offset = 0;
+      for (int j = 0; j < config.numTokens; ++j) {
+        int tok = feature[j];
+        int index = tok * config.numTokens + j;
+
+        if (preMap.containsKey(index)) {
+          // Unit activations for this input feature value have been
+          // precomputed
+          int id = preMap.get(index);
+
+          // Only extract activations for those nodes which are still
+          // activated (`ls`)
+          for (int nodeIndex : ls)
+            hidden[nodeIndex] += saved[id][nodeIndex];
+        } else {
+          for (int nodeIndex : ls) {
+            for (int k = 0; k < config.embeddingSize; ++k)
+              hidden[nodeIndex] += W1[nodeIndex][offset + k] * E[tok][k];
+          }
+        }
+        offset += config.embeddingSize;
+      }
+
+      // Add bias term and apply activation function
+      for (int nodeIndex : ls) {
+        hidden[nodeIndex] += b1[nodeIndex];
+        hidden3[nodeIndex] = Math.pow(hidden[nodeIndex], 3);
+      }
+      
+      return new HiddenLayer(hidden, hidden3, ls);
   }
 
   /**

@@ -36,6 +36,12 @@ public class ArcStandard extends ParsingSystem {
       transitions.add("R(" + label + ")");
 
     transitions.add("S");
+    
+    nActTypeNum = 3;
+    nDepTypeNum = labels.size();
+    nLeftID = 0;
+    nRightID = 1;
+    nShiftID = 2;
   }
 
   @Override
@@ -52,6 +58,7 @@ public class ArcStandard extends ParsingSystem {
 
     // Put the ROOT node on the stack
     c.stack.add(0);
+    
 
     return c;
   }
@@ -173,4 +180,11 @@ public class ArcStandard extends ParsingSystem {
     apply(ct, t);
     return canReach(ct, dTree);
   }
+
+@Override
+public int getHierarchicalActID(int actType, int depType) {
+
+	int retval = actType * nDepTypeNum + depType;
+	return retval >= transitions.size() ? -1 : retval; // only one depType == 0 is valid for shift act
+}
 }
