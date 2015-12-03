@@ -120,7 +120,7 @@ public class Config
   /**
    * Size of the neural network hidden layer.
    */
-  public int hiddenSize = 200;
+  public int hiddenSize = 300;
 
   /**
    * Dimensionality of the word embeddings used
@@ -212,7 +212,7 @@ public class Config
   public int nHierarchiyDepTypeBeamSize = 4;
 
   /**
-   *   margin used in max-margin update!
+   *   margin used in selection oracle!
    */
   public double dMargin = 0.1;
   
@@ -257,6 +257,14 @@ public class Config
    */
   public int nMaxReviseActNum = 3;
 
+  public int nMaxN = 200;
+
+  public boolean bBeamNBest = false;
+
+  public boolean bBestFirstRevise = false;
+  
+  public boolean bOutputReranking = false;
+
   public Config(Properties properties) {
     setProperties(properties);
   }
@@ -291,7 +299,11 @@ public class Config
     nMaxReviseActNum = PropertiesUtils.getInt(props, "nMaxReviseActNum", nMaxReviseActNum);
     nHierarchyActTypeBeamSize = PropertiesUtils.getInt(props, "nHierarchyActTypeBeamSize", nHierarchyActTypeBeamSize);
     nHierarchiyDepTypeBeamSize = PropertiesUtils.getInt(props, "nHierarchiyDepTypeBeamSize", nHierarchiyDepTypeBeamSize);
-    
+    dMargin = PropertiesUtils.getDouble(props, "dMargin", dMargin);
+    nMaxN = PropertiesUtils.getInt(props, "nMaxN", nMaxN);
+    bBeamNBest  = PropertiesUtils.getBool(props, "bBeamNBest", bBeamNBest);
+    bBestFirstRevise  = PropertiesUtils.getBool(props, "bBestFirstRevise", bBestFirstRevise);
+    bOutputReranking  = PropertiesUtils.getBool(props, "bOutputReranking", bOutputReranking);
     
     // Runtime parsing options
     sentenceDelimiter = PropertiesUtils.getString(props, "sentenceDelimiter", sentenceDelimiter);

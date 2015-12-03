@@ -1407,227 +1407,6 @@ public class DependencyParser {
 	  
 	    
   }
-//  
-//  /**
-//   *   Best-First Revise Module
-//   *   
-//   *   Revise the greedy result of parser with a best-first framework
-//   *   The best-first queue is constructed with action margin and tree model score
-//   * 
-//   */
-//  private List<Pair<Double, CFGTree>> bestfirstRevise(CFGTree gTree, CoreMap sent) {
-//
-//  	List<Pair<Double, CFGTree>> retval = new ArrayList<Pair<Double,CFGTree>>();
-//
-//  	/*
-//  	 *   Given a parsing state, get top config.nMaxReviseActNum revisedItem from 
-//  	 *   revisedItemsFromOneState queue and insert them into the queue according to the 
-//  	 *   product of margin and average of log probability of a complete parsing state
-//  	 *   
-//  	 *   In each step, we peek one revised item form the queue and get the revised CFGTree.
-//  	 *   Then insert the revised CFGTree into the revisedTrees queue.
-//  	 *   
-//  	 *   In the end, when the revisedTrees queue euqal the config.nMaxN, stop and return 
-//  	 *   these revised CFGTrees.
-//  	 */
-//
-//  	// priority queue from small to large
-//  	PriorityQueue<RevisedState> queue = new PriorityQueue<RevisedState>();
-//  	// priority queue of revised parsing tree
-//  	PriorityQueue<ScoredCFGTree> revisedTrees = new PriorityQueue<ScoredCFGTree>();
-//  	// priority queue of revised items from one complete parsing state
-//  	PriorityQueue<RevisedState> revisedItemsFromOneState = new PriorityQueue<RevisedState>();
-//  	
-//  	int transionNum = system.transitions.size();
-//  	
-//  	// get the initial result
-//  	ConParseTSSState initState = partialParser(null, null, sent, false); 
-//  	
-//  	//add the greedy parser result first.
-//  	retval.add(new Pair<Double, CFGTree>(initState.score/initState.actionSize, initState.convert2CFGTree()));
-//  	boolean firstRevise = true;
-//  	
-//  	//loop until the revised tree size to nMaxN
-//  	while(revisedTrees.size() < config.nMaxN){
-//  		
-//  		if(firstRevise){  //revise from the greedy classifier output
-//  			
-//  			ConParseTSSState state = initState.statePtr; 
-//  			double initStateScore = state.score/state.actionSize;
-//  			
-//  			state =state.statePtr; //from last state to second last state!
-//  								   //because the last state do not need devise
-//  			
-//  			revisedItemsFromOneState.clear();
-//  			
-//  			//get the acts in the greedy state
-//  			while(state != null){
-//  				
-//  				List<Integer> label = state.label;
-//  				double[] scores =state.scores;
-//  				int goldAct = state.bestActIndex;
-//  				
-//  				for(int j = 0; j < transionNum; j++){
-//  					double margin = scores[goldAct] - scores[j];
-//  					
-//  					//if action margin is larger than max margin, or is the best or valid
-//  					//action, just skip
-//  					if(margin < config.dMargin &&
-//  							label.get(j) == 0)
-//  						revisedItemsFromOneState.add( new RevisedState(new ReviseItem(state.actionSize, j, margin), state, initStateScore) );
-//  					
-//  				}
-//  				
-//  				state = state.statePtr;
-//  			}
-//  			
-//  			firstRevise = false;
-//  		}
-//  		else{  //revise from already revised parsing state
-//  			
-//  			if(queue.size() == 0) //no candidate in the queue
-//  				break;
-//  			
-//  			RevisedState rs = queue.poll();
-//  			//generate the new state and insert the revised tree to revisedTree Queue
-//  				
-//  			ConParseTSSState state = partialParser(rs.state, system.transitions.get(rs.item.reviseActID), 
-//  						sent, true);
-//  			double initStateScore = state.score/state.actionSize;
-//  			revisedTrees.add(new ScoredCFGTree(state.convert2CFGTree(), initStateScore));
-//  		
-//  			
-//  			int revisePos = rs.item.stateIndex;
-//  			
-//  			revisedItemsFromOneState.clear();
-//  			state = state.statePtr; //from last state to second last state!
-//  									//because the last state do not need devise
-//  			
-//  			//get the inherit revision candidate
-//  			while(state.actionSize != revisePos){
-//  				
-//  				List<Integer> label = state.label;
-//  				double[] scores =state.scores;
-//  				int goldAct = state.bestActIndex;
-//  				
-//  				for(int j = 0; j < transionNum; j++){
-//  					double margin = scores[goldAct] - scores[j];
-//  					
-//  					//if action margin is larger than max margin, or is the best or valid
-//  					//action, just skip
-//  					if(margin < config.dMargin && label.get(j) == 0){
-//  						revisedItemsFromOneState.add( new RevisedState(new ReviseItem(state.actionSize, j, margin), state, initStateScore) );
-//  					
-//  						if(j == 0 || j == 1)
-//  							System.err.println("Not Avaliable Action!");
-//  					}
-//  				}
-//  				
-//  				state = state.statePtr;
-//  			}
-//  			
-//  		
-//  		}
-//  		
-//  		//add the best n reviseItem to revisedState queue
-//  		for(int k = 0; k < config.nMaxReviseActNum; k++){
-//  			if(revisedItemsFromOneState.size()==0)
-//  				break;
-//  			
-//  			queue.add(revisedItemsFromOneState.poll());
-//  		}
-//  	}
-//  	
-//  	//save the state point to a arraylist
-//  	
-//  	
-//  	
-//  	//if the queque do not have elements, then just return
-////  	if(queue.size() == 0)
-////  		return retval;
-//  	
-//  	for(int i = 0; i < config.nMaxN; i++){
-//  		
-//  		if(revisedTrees.size() == 0)
-//  			break;
-//  		
-//  		ScoredCFGTree st = revisedTrees.poll();
-//  		retval.add(new Pair<Double, CFGTree>(st.score, st.tree));
-//  	}
-//  	return retval;
-//  }
-//  
-//  public DepState partialGreedyParser(DepState state, int givenAction, CoreMap sentence, boolean keepGold){
-//		 
-//	  	int numTrans = system.transitions.size();
-//
-//	    ConParseTSSState c = state == null? system.initialConfiguration(sentence) : state;
-//	    
-//	    while (!system.isTerminal(c)) {
-//	    	
-//	      if(c!=null && keepGold){  //exec the given action, the scores have been computed already 
-//	    	  double nextStateScore = 0;
-//	    	  double[] scores = c.scores;
-//		      
-//	    	  //generate the next state
-//	    	  c = system.apply(c,  givenAction.code());
-//	    	  nextStateScore = c.score + Math.log(scores[givenAction.code()]);
-//	    	  keepGold = false;  //only keep one action
-//		      
-//	    	  c.setScore(nextStateScore);
-//		     
-//		      continue;  //exec the given action, continue directly
-//	      }
-//	      
-//	      double[] scores = classifier.computeScores(getFeatureArray(c));
-//
-//	      double optScore = Double.NEGATIVE_INFINITY;
-//	      int optTrans = -1;
-//	      List<Integer> label = new ArrayList<Integer>();
-//
-//	      for (int j = 0; j < numTrans; ++j) {
-//	    	  
-//	    	  if(system.canApply(c, j))
-//	    		  label.add(0);
-//	    	  else
-//	    		  label.add(-1);
-//	  	    	
-//	    	  if (scores[j] > optScore && label.get(j) >= 0) {
-//	    		  optScore = scores[j];
-//	    		  optTrans = j;
-//	    	  }
-//		    	  
-//	      }
-//	      
-//	      label.set(optTrans, 1);  //best action label set 1
-//	      
-//	      //softmax the score
-//	      double sum = 0;
-//	      for(int j = 0 ; j < numTrans; ++j){
-//	    	  if(label.get(j) >= 0){
-//	    		  scores[j] = Math.exp(scores[j] - optScore);
-//	    		  sum += scores[j]; 
-//	    	  }
-//	      }
-//	      for(int j = 0 ; j < numTrans; ++j){
-//	    	  if(label.get(j) >= 0)
-//	    		  scores[j] = scores[j]/sum;
-//	      }
-//	      
-//	      c.setLabel(label);
-//	      c.setScores(scores);
-//	      c.setBestActIndex(optTrans);
-//	      
-//	      //#NOTE the score in the state is log() score, but the score array is
-//	      //      still probability, for convenient compare
-//	      double nextStateScore = c.score + Math.log(scores[optTrans]); 
-//	      c =  system.apply(c, optTrans);
-//	      c.setScore(nextStateScore);
-//	      
-//	    }
-//	    
-//	    return c;
-//}
 
 
 /**
@@ -1687,338 +1466,335 @@ private void wrongActAnalysis(CoreMap sentence, DependencyTree goldTree, PrintWr
  * @param keepGold
  * @return
  */
-//public DepState partialParser(DepState state, int givenActType, CoreMap sentence, boolean keepGold){
-//	 
-//  	int numTrans = system.transitions.size();
-//
-//    ConParseTSSState c = state == null? system.initialConfiguration(sentence) : state;
-//    
-//    while (!system.isTerminal(c)) {
-//    	
-//      if(c!=null && keepGold){  //exec the given action, the scores have been computed already 
-//    	  double nextStateScore = 0;
-//    	  double[] scores = c.scores;
-//	      
-//    	  //generate the next state
-//    	  c = system.apply(c,  givenAction.code());
-//    	  nextStateScore = c.score + Math.log(scores[givenAction.code()]);
-//    	  keepGold = false;  //only keep one action
-//	      
-//    	  c.setScore(nextStateScore);
-//	     
-//	      continue;  //exec the given action, continue directly
-//      }
-//      
-//      double[] scores = classifier.computeScores(getFeatureArray(c));
-//
-//      double optScore = Double.NEGATIVE_INFINITY;
-//      int optTrans = -1;
-//      List<Integer> label = new ArrayList<Integer>();
-//
-//      for (int j = 0; j < numTrans; ++j) {
-//    	  
-//    	  if(system.canApply(c, j))
-//    		  label.add(0);
-//    	  else
-//    		  label.add(-1);
-//  	    	
-//    	  if (scores[j] > optScore && label.get(j) >= 0) {
-//    		  optScore = scores[j];
-//    		  optTrans = j;
-//    	  }
-//	    	  
-//      }
-//      
-//      label.set(optTrans, 1);  //best action label set 1
-//      
-//      //softmax the score
-//      double sum = 0;
-//      for(int j = 0 ; j < numTrans; ++j){
-//    	  if(label.get(j) >= 0){
-//    		  scores[j] = Math.exp(scores[j] - optScore);
-//    		  sum += scores[j]; 
-//    	  }
-//      }
-//      for(int j = 0 ; j < numTrans; ++j){
-//    	  if(label.get(j) >= 0)
-//    		  scores[j] = scores[j]/sum;
-//      }
-//      
-//      c.setLabel(label);
-//      c.setScores(scores);
-//      c.setBestActIndex(optTrans);
-//      
-//      //#NOTE the score in the state is log() score, but the score array is
-//      //      still probability, for convenient compare
-//      double nextStateScore = c.score + Math.log(scores[optTrans]); 
-//      c =  system.apply(c, optTrans);
-//      c.setScore(nextStateScore);
-//      
-//    }
-//    
-//    return c;
-//}
-//
-///**
-// *   Best-First Revise Module
-// *   
-// *   Revise the greedy result of parser with a best-first framework
-// *   The best-first queue is constructed with action margin and tree model score
-// * 
-// */
-//private List<Pair<Double, CFGTree>> bestfirstRevise(CFGTree gTree, CoreMap sent) {
-//
-//	List<Pair<Double, CFGTree>> retval = new ArrayList<Pair<Double,CFGTree>>();
-//
-//	/*
-//	 *   Given a parsing state, get top config.nMaxReviseActNum revisedItem from 
-//	 *   revisedItemsFromOneState queue and insert them into the queue according to the 
-//	 *   product of margin and average of log probability of a complete parsing state
-//	 *   
-//	 *   In each step, we peek one revised item form the queue and get the revised CFGTree.
-//	 *   Then insert the revised CFGTree into the revisedTrees queue.
-//	 *   
-//	 *   In the end, when the revisedTrees queue euqal the config.nMaxN, stop and return 
-//	 *   these revised CFGTrees.
-//	 */
-//
-//	// priority queue from small to large
-//	PriorityQueue<RevisedState> queue = new PriorityQueue<RevisedState>();
-//	// priority queue of revised parsing tree
-//	PriorityQueue<ScoredCFGTree> revisedTrees = new PriorityQueue<ScoredCFGTree>();
-//	// priority queue of revised items from one complete parsing state
-//	PriorityQueue<RevisedState> revisedItemsFromOneState = new PriorityQueue<RevisedState>();
-//	
-//	int transionNum = system.transitions.size();
-//	
-//	// get the initial result
-//	ConParseTSSState initState = partialParser(null, null, sent, false); 
-//	
-//	//add the greedy parser result first.
-//	retval.add(new Pair<Double, CFGTree>(initState.score/initState.actionSize, initState.convert2CFGTree()));
-//	boolean firstRevise = true;
-//	
-//	//loop until the revised tree size to nMaxN
-//	while(revisedTrees.size() < config.nMaxN){
-//		
-//		if(firstRevise){  //revise from the greedy classifier output
-//			
-//			ConParseTSSState state = initState.statePtr; 
-//			double initStateScore = state.score/state.actionSize;
-//			
-//			state =state.statePtr; //from last state to second last state!
-//								   //because the last state do not need devise
-//			
-//			revisedItemsFromOneState.clear();
-//			
-//			//get the acts in the greedy state
-//			while(state != null){
-//				
-//				List<Integer> label = state.label;
-//				double[] scores =state.scores;
-//				int goldAct = state.bestActIndex;
-//				
-//				for(int j = 0; j < transionNum; j++){
-//					double margin = scores[goldAct] - scores[j];
-//					
-//					//if action margin is larger than max margin, or is the best or valid
-//					//action, just skip
-//					if(margin < config.dMargin &&
-//							label.get(j) == 0)
-//						revisedItemsFromOneState.add( new RevisedState(new ReviseItem(state.actionSize, j, margin), state, initStateScore) );
-//					
-//				}
-//				
-//				state = state.statePtr;
-//			}
-//			
-//			firstRevise = false;
-//		}
-//		else{  //revise from already revised parsing state
-//			
-//			if(queue.size() == 0) //no candidate in the queue
-//				break;
-//			
-//			RevisedState rs = queue.poll();
-//			//generate the new state and insert the revised tree to revisedTree Queue
-//				
-//			ConParseTSSState state = partialParser(rs.state, system.transitions.get(rs.item.reviseActID), 
-//						sent, true);
-//			double initStateScore = state.score/state.actionSize;
-//			revisedTrees.add(new ScoredCFGTree(state.convert2CFGTree(), initStateScore));
-//		
-//			
-//			int revisePos = rs.item.stateIndex;
-//			
-//			revisedItemsFromOneState.clear();
-//			state = state.statePtr; //from last state to second last state!
-//									//because the last state do not need devise
-//			
-//			//get the inherit revision candidate
-//			while(state.actionSize != revisePos){
-//				
-//				List<Integer> label = state.label;
-//				double[] scores =state.scores;
-//				int goldAct = state.bestActIndex;
-//				
-//				for(int j = 0; j < transionNum; j++){
-//					double margin = scores[goldAct] - scores[j];
-//					
-//					//if action margin is larger than max margin, or is the best or valid
-//					//action, just skip
-//					if(margin < config.dMargin && label.get(j) == 0){
-//						revisedItemsFromOneState.add( new RevisedState(new ReviseItem(state.actionSize, j, margin), state, initStateScore) );
-//					
-//						if(j == 0 || j == 1)
-//							System.err.println("Not Avaliable Action!");
-//					}
-//				}
-//				
-//				state = state.statePtr;
-//			}
-//			
-//		
-//		}
-//		
-//		//add the best n reviseItem to revisedState queue
-//		for(int k = 0; k < config.nMaxReviseActNum; k++){
-//			if(revisedItemsFromOneState.size()==0)
-//				break;
-//			
-//			queue.add(revisedItemsFromOneState.poll());
-//		}
-//	}
-//	
-//	//save the state point to a arraylist
-//	
-//	
-//	
-//	//if the queque do not have elements, then just return
-////	if(queue.size() == 0)
-////		return retval;
-//	
-//	for(int i = 0; i < config.nMaxN; i++){
-//		
-//		if(revisedTrees.size() == 0)
-//			break;
-//		
-//		ScoredCFGTree st = revisedTrees.poll();
-//		retval.add(new Pair<Double, CFGTree>(st.score, st.tree));
-//	}
-//	return retval;
-//}
-//
-///**
-// * sample revised oracle
-// * 
-// * @param testFile
-// * @param outputFile
-// * @param outputGoldFile
-// * @throws IOException
-// */
-//private void getNBest(String testFile, String outputFile, String outputGoldFile) throws IOException {
-//
-//	PrintWriter output = IOUtils.getPrintWriter(outputFile);
-//	PrintWriter outputGold = IOUtils.getPrintWriter(outputGoldFile);
-//	List<List<Pair<Double, CFGTree>>> outputNBest = new ArrayList<List<Pair<Double,CFGTree>>>();
-//	List<CFGTree> goldTree = new ArrayList<CFGTree>();
-//	List<CoreMap> testSents = new ArrayList<>();
-//	
-//	List<CFGTree> bestTrees = new ArrayList<CFGTree>();
-//	List<CFGTree> worstTrees = new ArrayList<CFGTree>();
-//	List<CFGTree> originalTrees = new ArrayList<CFGTree>();
-//	
-//	for(int i = 1; i<=config.nNBestFileNum; i++){
-//		
-//		System.err.println("Begin to revise file "+i);
-//		testSents.clear();
-//		goldTree.clear();
-//		bestTrees.clear();
-//		worstTrees.clear();
-//		
-//		//Util.loadFile(testFile+"."+i, testSents, goldTree);
-//		Util.loadFile(testFile, testSents, goldTree);
-//		
-//		for(int j = 0; j<testSents.size(); j++){
-//			
-//			System.err.println("Begin to revise sentence "+j);
-//			
-//			CFGTree gTree = goldTree.get(j);
-//			CoreMap sent = testSents.get(j);
-//			
-//			if(config.bBeamNBest){
-//				outputNBest.add(beamDecode(gTree, sent));
-//			}
-//			else if(config.bBestFirstRevise)
-//				outputNBest.add(bestfirstRevise(gTree, sent));
-//			else if(config.bReviseOneAct)
-//				outputNBest.add(reviseTree(gTree, sent));
-//			//outputNBest.get(j).add(new Pair<Double, CFGTree>(0.0, oracleCompute(sent, gTree)));
-//			
-//		}
-//
-//		// oracle computing
-//		double bestF1 = 0;
-//		double worstF1 = 0;
-//		CFGTree bestTree = null;
-//		CFGTree worstTree = null;
-//		
-//		//output
-//		outputGold.println(goldTree.size());
-//		for(int j = 0; j<testSents.size(); j++){
-//			
-//			List<Pair<Double, CFGTree>> nbest = outputNBest.get(j);
-//			output.println(nbest.size() + " WSJ_"+config.nFileIndex+"_"+j);
-//			output.flush();
-//			String goldTreeStr = goldTree.get(j).toString();
-//			originalTrees.add(nbest.get(0).second);  //the original tree is always
-//													 //the first one of returns
-//			
-//			for(int k = 0; k<nbest.size(); k++){
-//				output.println(nbest.get(k).first);
-//				output.println(nbest.get(k).second.toCharniarkString());
-//				
-//				//get oracle
-//				double f1 = system.evaluateSent(nbest.get(k).second.toString(), goldTreeStr);
-//				if(f1 > bestF1 || bestTree == null){
-//					bestF1 = f1;
-//					bestTree = nbest.get(k).second;
-//				}
-//				
-//				if(f1 < worstF1 || worstTree == null){
-//					worstF1 = f1;
-//					worstTree = nbest.get(k).second;
-//				}
-//			}
-//			
-//			output.println();
-//			
-//			outputGold.print("WSJ_"+config.nFileIndex+"_"+j+" ");
-//			outputGold.println(goldTree.get(j).toCharniarkString());
-//			bestTrees.add(bestTree);
-//			worstTrees.add(worstTree);
-//			bestTree = null;
-//			worstTree = null;
-//			bestF1 = 0;
-//			worstF1 = 0;
-//		}
-//		
-//		
-//	}
-//	
-//	output.close();
-//	outputGold.close();
-//	
-//	System.err.println("Best Oracle");
-//	System.err.println(system.evaluate(testSents, bestTrees, goldTree));
-//	
-//	System.err.println("Original Result");
-//	System.err.println(system.evaluate(testSents, originalTrees, goldTree));
-//	
-//	System.err.println("Worst Oracle");
-//	System.err.println(system.evaluate(testSents, worstTrees, goldTree));
-//
-//}
+public HierarchicalDepState partialGreedyParser(
+		HierarchicalDepState initialState, 
+		int givenActType, 
+		CoreMap sentence, 
+		boolean keepGold){
+	
+	/*
+	 * Initial the parsing state
+	 */
+	HierarchicalDepState pState = null;
+	if(initialState != null){
+		Configuration c = system.initialConfiguration(sentence);
+		pState = new HierarchicalDepState(c, -1, -1, 0.0, 0.0, null, true);
+	}
+	else
+		pState = initialState;
+	
+	while (!system.isTerminal(pState.c)) {
+		
+		/*
+		 * apply the given action for a given state
+		 */
+		if( initialState != null && keepGold ){  //exec the given action, the scores have been computed already 
+			
+			/*
+			 * compute the optimal deptype and expand the state
+			 */
+			Pair<Integer, Double> optDepTypeAndProb = 
+					classifier.getOptDepTypeAndProb(pState, givenActType);
+			double actTypeLogProb = pState.actTypeScore + 
+					Math.log(pState.actTypeDistribution[givenActType]);
+			double depTypeLogProb = pState.depTypeScore + Math.log(optDepTypeAndProb.second);
+			
+			HierarchicalDepState newState = new HierarchicalDepState(
+					pState.c, 
+					givenActType, 
+					optDepTypeAndProb.first, 
+					actTypeLogProb, 
+					depTypeLogProb, 
+					pState, 
+					false);
+			pState = newState;
+			//generate the next state
+			keepGold = false;  //only keep one action
+			continue;  //exec the given action, continue directly
+		}
+		
+		
+		/*
+		 * apply the optimal actions until terminates
+		 */
+		
+		/*
+		 * compute the relevance paras for a given state
+		 */
+		int[] actTypeLabel = system.getValidActType(pState.c);
+		int[] feature = getFeatureArray(pState.c);
+		HiddenLayer hidden = classifier.getHidden(false, pState.featureArray, pState.c);
+		pState.setParas(hidden, actTypeLabel, feature);
+		
+		/*
+		 * compute the hierarchical output layer
+		 */
+		Pair<Integer, double[]> optActTypeAndLayer = classifier.getOptActTypeAndLayer(pState);
+		pState.setActTypeDistribution(optActTypeAndLayer.second);
+		Pair<Integer, Double> optDepTypeAndProb = classifier.getOptDepTypeAndProb(pState, optActTypeAndLayer.first);
+		
+		/*
+		 * construct the new state
+		 * 
+		 * #NOTE the score in the state is log() score, but the score array is
+		 *       still probability, for convenient compare
+		 */
+		double actTypeLogProb = pState.actTypeScore + Math.log(optActTypeAndLayer.second[optActTypeAndLayer.first]);
+		double depTypeLogProb = pState.depTypeScore + Math.log(optDepTypeAndProb.second);
+		HierarchicalDepState newState = new HierarchicalDepState(
+				pState.c, 
+				optActTypeAndLayer.first, 
+				optDepTypeAndProb.first, 
+				actTypeLogProb, 
+				depTypeLogProb, 
+				pState, 
+				false);
+		
+		pState = newState;
+		pState.StateApply(system);
+		
+	}
+	
+	return pState;
+}
+
+/**
+ *   Best-First Revise Module
+ *   
+ *   Revise the greedy result of parser with a best-first framework
+ *   The best-first queue is constructed with action margin and tree model score
+ * 
+ */
+private List<Pair<Double, DependencyTree>> bestfirstRevise(CoreMap sent) {
+
+	List<Pair<Double, DependencyTree>> retval = new ArrayList<Pair<Double,DependencyTree>>();
+
+	/*
+	 *   Given a parsing state, get top config.nMaxReviseActNum revisedItem from 
+	 *   revisedItemsFromOneState queue and insert them into the queue according to the 
+	 *   product of margin and average of log probability of a complete parsing state
+	 *   
+	 *   In each step, we peek one revised item form the queue and get the revised CFGTree.
+	 *   Then insert the revised CFGTree into the revisedTrees queue.
+	 *   
+	 *   In the end, when the revisedTrees queue euqal the config.nMaxN, stop and return 
+	 *   these revised CFGTrees.
+	 */
+
+	// priority queue from small to large
+	PriorityQueue<RevisedState> queue = new PriorityQueue<RevisedState>();
+	// priority queue of revised parsing tree
+	PriorityQueue<ScoredDepTree> revisedTrees = new PriorityQueue<ScoredDepTree>();
+	// priority queue of revised items from one complete parsing state
+	PriorityQueue<RevisedState> revisedItemsFromOneState = new PriorityQueue<RevisedState>();
+	
+	int transionNum = system.transitions.size();
+	
+	// get the initial result
+	HierarchicalDepState initState = partialGreedyParser(null, -1, sent, false); 
+	
+	//add the greedy parser result first.
+	retval.add(new Pair<Double, DependencyTree>(initState.score, initState.c.tree ));
+	boolean firstRevise = true;
+	
+	//loop until the revised tree size to nMaxN
+	while(revisedTrees.size() < config.nMaxN){
+		
+		/*
+		 * first revise from the optimal tree by the greedy baseline parser
+		 */
+		if(firstRevise){  //revise from the greedy classifier output
+			
+			HierarchicalDepState state = initState; 
+			double initStateScore = state.score;
+			
+			state =state.lastState; //from last state of the final state
+								    //because the final state do not need devise
+			revisedItemsFromOneState.clear();
+			
+			//get the acts in the greedy state
+			while(state != null){
+				
+				int[] label = state.actTypeLabel;
+				double[] scores =state.actTypeDistribution;
+				int bestAct = state.actType;
+				
+				for(int j = 0; j < ParsingSystem.nActTypeNum; j++){
+					double margin = scores[bestAct] - scores[j];
+					
+					//if action margin is larger than max margin, or is the best or valid
+					//action, just skip
+					if(margin < config.dMargin &&
+							label[j] == 0)
+						revisedItemsFromOneState.add( new RevisedState(new ReviseItem(-1, j, margin), state, initStateScore) );
+					
+				}
+				
+				state = state.lastState;
+			}
+			
+			firstRevise = false;
+		}
+		else{  //revise from already revised parsing state
+			
+			if(queue.size() == 0) //no candidate in the queue
+				break;
+			
+			RevisedState rs = queue.poll();
+			//generate the new state and insert the revised tree to revisedTree Queue
+				
+			HierarchicalDepState state = partialGreedyParser(rs.state, rs.item.reviseActID, sent, true);
+			double initStateScore = state.score;
+			revisedTrees.add(new ScoredDepTree(state.c.tree, initStateScore));
+		
+			revisedItemsFromOneState.clear();
+			state = state.lastState; //from last state to second last state!
+									 //because the last state do not need devise
+			
+			//get the inherit revision candidate
+			while(state != rs.state){ //till the previous revised state
+				
+				int[] label = state.actTypeLabel;
+				double[] scores =state.actTypeDistribution;
+				int aptAct = state.actType;
+				
+				for(int j = 0; j < ParsingSystem.nActTypeNum; j++){
+					double margin = scores[aptAct] - scores[j];
+					
+					//if action margin is larger than max margin, or is the best or valid
+					//action, just skip
+					if (j == aptAct) 
+						continue;
+					
+					if(margin < config.dMargin)
+						revisedItemsFromOneState.add( new RevisedState(new ReviseItem(-1, j, margin), state, initStateScore) );
+				}
+				
+				state = state.lastState;
+			}
+			
+		
+		}
+		
+		//add the best n reviseItem to revisedState queue
+		for(int k = 0; k < config.nMaxReviseActNum; k++){
+			if(revisedItemsFromOneState.size()==0)
+				break;
+			
+			queue.add(revisedItemsFromOneState.poll());
+		}
+	}
+	
+	/*
+	 * get the k-best result from the queue and return
+	 */
+	for(int i = 0; i < config.nMaxN; i++){
+		
+		if(revisedTrees.size() == 0)
+			break;
+		
+		ScoredDepTree st = revisedTrees.poll();
+		retval.add(new Pair<Double, DependencyTree>(st.score, st.tree));
+	}
+	return retval;
+}
+
+/**
+ * sample revised oracle
+ * 
+ * @param testFile
+ * @param outputFile
+ * @param outputGoldFile
+ * @throws IOException
+ */
+private void getNBest(String testFile, String outputFile) throws IOException {
+
+	PrintWriter output = IOUtils.getPrintWriter(outputFile);
+	List<List<Pair<Double, DependencyTree>>> outputNBest = new ArrayList<List<Pair<Double,DependencyTree>>>();
+	List<CoreMap> testSents = new ArrayList<>();
+	
+	List<DependencyTree> bestTrees = new ArrayList<DependencyTree>();
+	List<DependencyTree> worstTrees = new ArrayList<DependencyTree>();
+	List<DependencyTree> goldTrees = new ArrayList<DependencyTree>();
+	List<DependencyTree> originalTrees = new ArrayList<DependencyTree>();
+	
+		
+	System.err.println("Begin to revise file");
+	testSents.clear();
+	bestTrees.clear();
+	worstTrees.clear();
+	
+	Util.loadConllFile(testFile, testSents, goldTrees);
+	
+	for(int j = 0; j<testSents.size(); j++){
+		
+		System.err.println("Begin to revise sentence "+j);
+		
+		CoreMap sent = testSents.get(j);
+		
+		if(config.bBeamNBest){
+//			outputNBest.add(beamDecode(gTree, sent));
+		}
+		else if(config.bBestFirstRevise)
+			outputNBest.add(bestfirstRevise(sent));
+		
+	}
+	
+	// oracle computing
+	double bestF1 = 0;
+	double worstF1 = 0;
+	DependencyTree bestTree = null;
+	DependencyTree worstTree = null;
+	
+	//output
+	for(int j = 0; j<testSents.size(); j++){
+		
+		List<Pair<Double, DependencyTree>> nbest = outputNBest.get(j);
+		output.flush();
+		originalTrees.add(nbest.get(0).second);  //the original tree is always
+		//the first one of returns
+		
+		for(int k = 0; k<nbest.size(); k++){
+			output.println(nbest.get(k).first);
+			output.println(nbest.get(k).second);
+			
+			//get oracle
+			double f1 = system.evaluateOneTree(testSents.get(j), nbest.get(k).second, goldTrees.get(j));
+			if(f1 > bestF1 || bestTree == null){
+				bestF1 = f1;
+				bestTree = nbest.get(k).second;
+			}
+			
+			if(f1 < worstF1 || worstTree == null){
+				worstF1 = f1;
+				worstTree = nbest.get(k).second;
+			}
+		}
+		
+		output.println();
+		
+		bestTrees.add(bestTree);
+		worstTrees.add(worstTree);
+		bestTree = null;
+		worstTree = null;
+		bestF1 = 0;
+		worstF1 = 0;
+	}
+		
+	
+	
+	output.close();
+	
+	System.err.println("Best Oracle");
+	System.err.println(system.evaluate(testSents, bestTrees, goldTrees));
+	
+	System.err.println("Original Result");
+	System.err.println(system.evaluate(testSents, originalTrees, goldTrees));
+	
+	System.err.println("Worst Oracle");
+	System.err.println(system.evaluate(testSents, worstTrees, goldTrees));
+
+}
 
  /**
    * Explicitly specifies the number of arguments expected with
@@ -2050,7 +1826,10 @@ private void wrongActAnalysis(CoreMap sentence, DependencyTree goldTree, PrintWr
       parser.loadModelFile(props.getProperty("model"));
       loaded = true;
       
-      if(props.containsKey("bWrongActionNanlysis")){
+      if(props.containsKey("bOutputReranking")){
+    	  parser.getNBest(props.getProperty("testFile"), props.getProperty("outFile"));
+      }
+      else if(props.containsKey("bWrongActionNanlysis")){
     	  parser.outputWrongActProb(props.getProperty("testFile"), props.getProperty("outFile"));
       }
       //get selection braching oracle
@@ -2120,47 +1899,6 @@ private void wrongActAnalysis(CoreMap sentence, DependencyTree goldTree, PrintWr
   }
   
   
-  public List<Integer> softmax(double[] scores, Configuration c) {
-	// TODO Auto-generated method stub
-	 
-	  int numLabels = system.transitions.size();
-	  double maxscore = -1000;
-	  int maxId = -1;
-	  ArrayList<Integer> label = new ArrayList<Integer>(system.transitions.size());
-	  
-	  for(int i = 0; i<numLabels; i++){
-		  if(system.canApply(c, system.transitions.get(i))){
-			  label.add(0);
-			  if(maxId==-1 || scores[i]>maxscore){
-				  maxId=i;
-				  maxscore=scores[i];
-			  }
-		  }
-		  else {
-			label.add(-1);
-		}
-	  }
-	  
-	  /*
-	     *   Do soft max!
-	     */
-	    double sum2 = 0.0;	//sum of scores of all actions after softmax  
-//	    double maxScore = scores[maxId];
-//	    
-//	    for (int i = 0; i < numLabels; ++i) {
-//	      if (label.get(i)>= 0) {
-//	    	  
-//	        scores[i] = Math.exp(scores[i] - maxScore);
-//	        sum2 += scores[i];
-//	      }
-//	    }
-//	    for(int i =0; i<numLabels;i++)
-//	    	if(label.get(i) != -1)
-//	    		scores[i]=Math.log(scores[i]/sum2);  //out put the log of probability
-	    
-	    return label;
-}
-//
 private void beamDecode(String testFile, String outFile) {
 
 	  System.err.println("Test File: " + testFile);

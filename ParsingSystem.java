@@ -15,6 +15,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.DoubleToLongFunction;
 
 /**
  * Defines a transition-based parsing framework for dependency parsing.
@@ -294,6 +295,17 @@ public abstract class ParsingSystem {
     System.out.println("UAS w/o puntuations of oracles: " + correct/sum);
     
    
+  }
+  
+  public double evaluateOneTree(CoreMap sentence, DependencyTree pre, DependencyTree gold){
+	  
+	  List<DependencyTree> trees = new ArrayList<>();
+	  trees.add(pre);
+	  Map<String, Double> oneSentResult = evaluateOneSent(sentence, trees, gold);
+	  double correct = oneSentResult.get("correct");
+	  double sum = oneSentResult.get("sum");
+	  
+	  return correct / sum;
   }
   
   /**

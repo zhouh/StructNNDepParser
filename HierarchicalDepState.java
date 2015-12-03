@@ -16,7 +16,7 @@ public class HierarchicalDepState implements Comparable{
 	public int depType;
 	public HierarchicalDepState lastState = null;
 	public boolean bGold = true;
-	
+	public double[] actTypeDistribution = null;
 	public int[] actTypeLabel = null;
 	public int[] depTypeLabel = null;
 	int[] featureArray = null;
@@ -51,6 +51,20 @@ public class HierarchicalDepState implements Comparable{
 		this.featureArray = featureArray;
 		this.hiddenLayer = hiddenLayer;
 		this.score = depTypeScore + actTypeScore;
+	}
+
+
+	public void setActTypeDistribution(double[] actTypeDistribution) {
+		this.actTypeDistribution = actTypeDistribution;
+	}
+
+
+	public void setActTypeLabel(int[] actTypeLabel) {
+		this.actTypeLabel = actTypeLabel;
+	}
+
+	public void setHiddenLayer(HiddenLayer hiddenLayer) {
+		this.hiddenLayer = hiddenLayer;
 	}
 
 	public void setFeatureArray(int[] featureArray){

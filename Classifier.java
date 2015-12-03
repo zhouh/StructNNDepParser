@@ -1467,6 +1467,49 @@ public class Classifier {
 
 		return depLabelScores;
 	}
+	
+	public Pair<Integer, double[]> getOptActTypeAndLayer(HierarchicalDepState state){
+
+		double[] actTypeLayer = getActTypeLayer(false, state.hiddenLayer, state.actTypeLabel);
+		int optActType = softmax(actTypeLayer, state.actTypeLabel);
+		return new Pair<>(optActType, actTypeLayer);
+		
+	}
+	
+	public Pair<Integer, Double> getOptDepTypeAndProb(HierarchicalDepState state, int actType){
+		int[] validDepTypeLabel = system.getValidLabelGivenActType(state.c, actType);
+		double[] depTypeLayer = getDepTypeLayer(false, actType, state.hiddenLayer, validDepTypeLabel);
+		int optDepType = softmax(depTypeLayer, validDepTypeLabel);
+		
+		return new Pair<Integer, Double>(optDepType, depTypeLayer[optDepType]);
+	}
+	
+	public int softmax(double[] layer, int[] validLabels){
+		
+		double optScore = Double.NEGATIVE_INFINITY;
+		int optTrans = -1;
+
+	      for (int j = 0; j < layer.length; ++j) 
+	    	  if (layer[j] > optScore && validLabels[j] >= 0) {
+	    		  optScore = layer[j];
+	    		  optTrans = j;
+	    	  }
+	      
+	      double sum = 0;
+	      for(int j = 0 ; j < layer.length; ++j){
+	    	  if(validLabels[j] >= 0){
+	    		  layer[j] = Math.exp(layer[j] - optScore);
+	    		  sum += layer[j]; 
+	    	  }
+	      }
+	      for(int j = 0 ; j < layer.length; ++j){
+	    	  if(validLabels[j] >= 0)
+	    		  layer[j] = layer[j]/sum;
+	      }		
+	      
+	      return optTrans;
+	      
+	}
 
 	// double[] computeScores(int[] feature) {
 	// return computeScores(feature, preMap);
