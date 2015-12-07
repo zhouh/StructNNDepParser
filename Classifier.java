@@ -1477,6 +1477,8 @@ public class Classifier {
 	}
 	
 	public Pair<Integer, Double> getOptDepTypeAndProb(HierarchicalDepState state, int actType){
+		if(actType == ParsingSystem.shiftActTypeID)
+			return null;
 		int[] validDepTypeLabel = system.getValidLabelGivenActType(state.c, actType);
 		double[] depTypeLayer = getDepTypeLayer(false, actType, state.hiddenLayer, validDepTypeLabel);
 		int optDepType = softmax(depTypeLayer, validDepTypeLabel);

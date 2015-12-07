@@ -214,7 +214,7 @@ public class Config
   /**
    *   margin used in selection oracle!
    */
-  public double dMargin = 0.1;
+  public double dMargin = 0.999;
   
   
   /**
@@ -255,9 +255,9 @@ public class Config
    * max revised action num in best-first reranking
    * 
    */
-  public int nMaxReviseActNum = 3;
+  public int nMaxReviseActNum = 100;
 
-  public int nMaxN = 200;
+  public int nMaxN = 64;
 
   public boolean bBeamNBest = false;
 

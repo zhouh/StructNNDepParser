@@ -1476,7 +1476,7 @@ public HierarchicalDepState partialGreedyParser(
 	 * Initial the parsing state
 	 */
 	HierarchicalDepState pState = null;
-	if(initialState != null){
+	if(initialState == null){
 		Configuration c = system.initialConfiguration(sentence);
 		pState = new HierarchicalDepState(c, -1, -1, 0.0, 0.0, null, true);
 	}
@@ -1493,21 +1493,23 @@ public HierarchicalDepState partialGreedyParser(
 			/*
 			 * compute the optimal deptype and expand the state
 			 */
+			boolean bShift = givenActType == ParsingSystem.shiftActTypeID;
 			Pair<Integer, Double> optDepTypeAndProb = 
 					classifier.getOptDepTypeAndProb(pState, givenActType);
 			double actTypeLogProb = pState.actTypeScore + 
 					Math.log(pState.actTypeDistribution[givenActType]);
-			double depTypeLogProb = pState.depTypeScore + Math.log(optDepTypeAndProb.second);
+			double depTypeLogProb = bShift ? pState.depTypeScore : pState.depTypeScore + Math.log(optDepTypeAndProb.second);
 			
 			HierarchicalDepState newState = new HierarchicalDepState(
 					pState.c, 
 					givenActType, 
-					optDepTypeAndProb.first, 
+					bShift ? -1 : optDepTypeAndProb.first, 
 					actTypeLogProb, 
 					depTypeLogProb, 
 					pState, 
 					false);
 			pState = newState;
+			pState.StateApply(system);
 			//generate the next state
 			keepGold = false;  //only keep one action
 			continue;  //exec the given action, continue directly
@@ -1523,15 +1525,16 @@ public HierarchicalDepState partialGreedyParser(
 		 */
 		int[] actTypeLabel = system.getValidActType(pState.c);
 		int[] feature = getFeatureArray(pState.c);
-		HiddenLayer hidden = classifier.getHidden(false, pState.featureArray, pState.c);
+		HiddenLayer hidden = classifier.getHidden(false, feature, pState.c);
 		pState.setParas(hidden, actTypeLabel, feature);
 		
 		/*
 		 * compute the hierarchical output layer
 		 */
 		Pair<Integer, double[]> optActTypeAndLayer = classifier.getOptActTypeAndLayer(pState);
+		boolean bShift = optActTypeAndLayer.first == ParsingSystem.shiftActTypeID;
 		pState.setActTypeDistribution(optActTypeAndLayer.second);
-		Pair<Integer, Double> optDepTypeAndProb = classifier.getOptDepTypeAndProb(pState, optActTypeAndLayer.first);
+		Pair<Integer, Double> optDepTypeAndProb =  bShift ? null : classifier.getOptDepTypeAndProb(pState, optActTypeAndLayer.first);
 		
 		/*
 		 * construct the new state
@@ -1540,11 +1543,11 @@ public HierarchicalDepState partialGreedyParser(
 		 *       still probability, for convenient compare
 		 */
 		double actTypeLogProb = pState.actTypeScore + Math.log(optActTypeAndLayer.second[optActTypeAndLayer.first]);
-		double depTypeLogProb = pState.depTypeScore + Math.log(optDepTypeAndProb.second);
+		double depTypeLogProb = bShift ? pState.depTypeScore : ( pState.depTypeScore + Math.log(optDepTypeAndProb.second) );
 		HierarchicalDepState newState = new HierarchicalDepState(
 				pState.c, 
 				optActTypeAndLayer.first, 
-				optDepTypeAndProb.first, 
+				bShift ? -1 : optDepTypeAndProb.first, 
 				actTypeLogProb, 
 				depTypeLogProb, 
 				pState, 
@@ -1588,8 +1591,6 @@ private List<Pair<Double, DependencyTree>> bestfirstRevise(CoreMap sent) {
 	// priority queue of revised items from one complete parsing state
 	PriorityQueue<RevisedState> revisedItemsFromOneState = new PriorityQueue<RevisedState>();
 	
-	int transionNum = system.transitions.size();
-	
 	// get the initial result
 	HierarchicalDepState initState = partialGreedyParser(null, -1, sent, false); 
 	
@@ -1606,6 +1607,7 @@ private List<Pair<Double, DependencyTree>> bestfirstRevise(CoreMap sent) {
 		if(firstRevise){  //revise from the greedy classifier output
 			
 			HierarchicalDepState state = initState; 
+			HierarchicalDepState nextState = state;
 			double initStateScore = state.score;
 			
 			state =state.lastState; //from last state of the final state
@@ -1613,27 +1615,40 @@ private List<Pair<Double, DependencyTree>> bestfirstRevise(CoreMap sent) {
 			revisedItemsFromOneState.clear();
 			
 			//get the acts in the greedy state
-			while(state != null){
+			while(state.lastState != null){
 				
 				int[] label = state.actTypeLabel;
 				double[] scores =state.actTypeDistribution;
-				int bestAct = state.actType;
+				int bestAct = nextState.actType;
 				
 				for(int j = 0; j < ParsingSystem.nActTypeNum; j++){
-					double margin = scores[bestAct] - scores[j];
 					
-					//if action margin is larger than max margin, or is the best or valid
+					if(j == bestAct) continue; // it's the best action in the table, just skip!
+					
+					double margin = scores[bestAct] - scores[j];
+					if(margin < config.dMargin)
+						System.out.println("margin = " + margin);
+					
+					//if action margin is larger than max margin, or is the best or unvalid
 					//action, just skip
 					if(margin < config.dMargin &&
 							label[j] == 0)
 						revisedItemsFromOneState.add( new RevisedState(new ReviseItem(-1, j, margin), state, initStateScore) );
 					
 				}
-				
+
+				nextState = state;
 				state = state.lastState;
 			}
 			
 			firstRevise = false;
+			//add the best n reviseItem to revisedState queue
+			for(int k = 0; k < config.nMaxReviseActNum; k++){
+				if(revisedItemsFromOneState.size()==0)
+					break;
+				
+				queue.add(revisedItemsFromOneState.poll());
+			}
 		}
 		else{  //revise from already revised parsing state
 			
@@ -1644,32 +1659,35 @@ private List<Pair<Double, DependencyTree>> bestfirstRevise(CoreMap sent) {
 			//generate the new state and insert the revised tree to revisedTree Queue
 				
 			HierarchicalDepState state = partialGreedyParser(rs.state, rs.item.reviseActID, sent, true);
+			HierarchicalDepState nextState = state;
 			double initStateScore = state.score;
 			revisedTrees.add(new ScoredDepTree(state.c.tree, initStateScore));
 		
 			revisedItemsFromOneState.clear();
+			
 			state = state.lastState; //from last state to second last state!
 									 //because the last state do not need devise
 			
 			//get the inherit revision candidate
-			while(state != rs.state){ //till the previous revised state
+			while(state.lastState != rs.state){ //till the previous revised state
 				
 				int[] label = state.actTypeLabel;
 				double[] scores =state.actTypeDistribution;
-				int aptAct = state.actType;
+				int aptAct = nextState.actType;
 				
 				for(int j = 0; j < ParsingSystem.nActTypeNum; j++){
+					if (j == aptAct || label[j] < 0) 
+						continue;
+					
 					double margin = scores[aptAct] - scores[j];
 					
-					//if action margin is larger than max margin, or is the best or valid
-					//action, just skip
-					if (j == aptAct) 
-						continue;
+					//if action margin is larger than max margin, skip
 					
 					if(margin < config.dMargin)
 						revisedItemsFromOneState.add( new RevisedState(new ReviseItem(-1, j, margin), state, initStateScore) );
 				}
 				
+				nextState = state;
 				state = state.lastState;
 			}
 			
@@ -1746,17 +1764,19 @@ private void getNBest(String testFile, String outputFile) throws IOException {
 	DependencyTree bestTree = null;
 	DependencyTree worstTree = null;
 	
+	double sumNbestNum = 0;
 	//output
 	for(int j = 0; j<testSents.size(); j++){
 		
 		List<Pair<Double, DependencyTree>> nbest = outputNBest.get(j);
+		sumNbestNum += nbest.size();
 		output.flush();
 		originalTrees.add(nbest.get(0).second);  //the original tree is always
 		//the first one of returns
 		
 		for(int k = 0; k<nbest.size(); k++){
-			output.println(nbest.get(k).first);
-			output.println(nbest.get(k).second);
+//			output.println(nbest.get(k).first);
+//			output.println(nbest.get(k).second);
 			
 			//get oracle
 			double f1 = system.evaluateOneTree(testSents.get(j), nbest.get(k).second, goldTrees.get(j));
@@ -1793,6 +1813,8 @@ private void getNBest(String testFile, String outputFile) throws IOException {
 	
 	System.err.println("Worst Oracle");
 	System.err.println(system.evaluate(testSents, worstTrees, goldTrees));
+	
+	System.err.println("Average k:" + (sumNbestNum / testSents.size()));
 
 }
 
@@ -1847,8 +1869,6 @@ private void getNBest(String testFile, String outputFile) throws IOException {
 //      else 
 //    	  parser.testCoNLL(props.getProperty("testFile"), props.getProperty("outFile"));
     }
-    
-  
 
     // Parse raw text data
     if (props.containsKey("textFile")) {
