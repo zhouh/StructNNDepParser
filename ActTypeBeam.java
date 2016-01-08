@@ -23,13 +23,12 @@ private static final long serialVersionUID = 1L;
 	
 	/**
 	 * the constructor of the new priority queue
-	 * 
 	 */
 	public ActTypeBeam(int beam){
 		
 		//the new comparator function
 		super(1,new Comparator<DepTypeBeam>(){
-			@Override
+//			@Override
 			public int compare(DepTypeBeam o1, DepTypeBeam o2) {
 				if( o1.score < o2.score)
 					return -1 ;
@@ -96,7 +95,7 @@ private static final long serialVersionUID = 1L;
 
 	public List<HierarchicalDepState> returnBeamStates() {
 
-		List<HierarchicalDepState> retval = new ArrayList<>();
+		List<HierarchicalDepState> retval = new ArrayList<HierarchicalDepState>();
 		for(DepTypeBeam dtBeam : this)
 			for( HierarchicalDepState state : dtBeam )
 				retval.add(state);

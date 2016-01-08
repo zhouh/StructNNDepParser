@@ -29,7 +29,7 @@ import java.io.*;
  *  @author Jon Gauthier
  */
 
-class Util {
+public class Util {
 
   private Util() {} // static methods
 

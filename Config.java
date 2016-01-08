@@ -191,7 +191,7 @@ public class Config
   /**
    *   beam size with beam search decoder
    */
-  public int nBeam = 8;
+  public int nBeam = 64;
   
   /*
    *  whether to update if get the right dependency tree 

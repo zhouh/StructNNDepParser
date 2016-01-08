@@ -2,6 +2,10 @@ package nndep;
 
 import java.util.*;
 
+import edu.stanford.nlp.ling.CoreAnnotations;
+import edu.stanford.nlp.ling.CoreLabel;
+import edu.stanford.nlp.util.CoreMap;
+
 /**
  * Represents a partial or complete dependency parse of a sentence, and
  * provides convenience methods for analyzing the parse.
@@ -151,6 +155,37 @@ class DependencyTree {
     for (int i = 1; i <= n; ++i)
       System.out.println(i + " " + getHead(i) + " " + getLabel(i));
     System.out.println();
+  }
+  
+  public String toBracketString(CoreMap sent){
+	  
+	  return toBracketNodeString(getRoot(),sent);
+	  
+  }
+  
+  public String toBracketNodeString(int node, CoreMap sent){
+	  
+	  List<CoreLabel> tokens = sent.get(CoreAnnotations.TokensAnnotation.class);
+	  
+	  String retval = "(";
+	  boolean bHasChild = false;
+	  for(int left = 0; left < node; left++)
+		  if(head.get(left) == node){
+			  bHasChild = true;
+			  retval += " "+toBracketNodeString(left, sent);
+		  }
+
+	  retval+= " "+tokens.get(node-1).word()+"/"+tokens.get(node-1).tag();
+	  
+	  for (int right = node+1; right <=  n; right++) {
+		
+		  if(head.get(right) == node)
+			  retval += " " + toBracketNodeString(right, sent);
+	  }
+	  
+	  retval += ")";
+	  
+	  return retval;
   }
 
 }

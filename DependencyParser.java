@@ -33,6 +33,7 @@ import java.io.Writer;
 import java.util.AbstractCollection;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -1722,7 +1723,6 @@ private List<Pair<Double, DependencyTree>> bestfirstRevise(CoreMap sent) {
  * 
  * @param testFile
  * @param outputFile
- * @param outputGoldFile
  * @throws IOException
  */
 private void getNBest(String testFile, String outputFile) throws IOException {
@@ -1751,7 +1751,7 @@ private void getNBest(String testFile, String outputFile) throws IOException {
 		CoreMap sent = testSents.get(j);
 		
 		if(config.bBeamNBest){
-//			outputNBest.add(beamDecode(gTree, sent));
+			outputNBest.add(beamSearchSample(sent));
 		}
 		else if(config.bBestFirstRevise)
 			outputNBest.add(bestfirstRevise(sent));
@@ -1770,6 +1770,9 @@ private void getNBest(String testFile, String outputFile) throws IOException {
 		
 		List<Pair<Double, DependencyTree>> nbest = outputNBest.get(j);
 		sumNbestNum += nbest.size();
+		if(j != 0)
+			output.println();
+		output.println(goldTrees.get(j).toBracketString(testSents.get(j)));
 		output.flush();
 		originalTrees.add(nbest.get(0).second);  //the original tree is always
 		//the first one of returns
@@ -1789,9 +1792,10 @@ private void getNBest(String testFile, String outputFile) throws IOException {
 				worstF1 = f1;
 				worstTree = nbest.get(k).second;
 			}
+			
+			output.println(nbest.get(k).second.toBracketString(testSents.get(j)));
 		}
 		
-		output.println();
 		
 		bestTrees.add(bestTree);
 		worstTrees.add(worstTree);
@@ -1799,9 +1803,9 @@ private void getNBest(String testFile, String outputFile) throws IOException {
 		worstTree = null;
 		bestF1 = 0;
 		worstF1 = 0;
-	}
 		
-	
+		output.flush();
+	}
 	
 	output.close();
 	
@@ -1916,6 +1920,115 @@ private void getNBest(String testFile, String outputFile) throws IOException {
 		  retval.add(state.c.tree);
 		  
 	  return retval;
+  }
+  
+  private List<Pair<Double, DependencyTree>> beamSearchSample(CoreMap sent) {
+	  
+	  CoreMap sentence = sent;
+	  /*
+	   *   Begin to decode!
+	   */
+	  int nSentSize = sentence.get(CoreAnnotations.TokensAnnotation.class).size();
+	  int nRound = nSentSize * 2;
+	  
+	  Configuration c = system.initialConfiguration(sentence);
+	  
+	  // only store the best beam candidates in decoding!
+	  HierarchicalDepState initialState = new HierarchicalDepState(c, -1, -1, 0.0, 0.0, null, true);
+	  List<HierarchicalDepState> beam = new ArrayList<>();
+	  List<HierarchicalDepState> lattice = new ArrayList<>();
+	  beam.add(initialState);
+	  
+	  // begin to do nRound-th action
+	  int i ;
+	  for(i = 0; i < nRound; i++){
+		  
+		  for(HierarchicalDepState pState : beam){
+			  
+			  int[] actTypeLabel = system.getValidActType(pState.c);
+			  int[] feature = getFeatureArray(pState.c);
+			  HiddenLayer hidden = classifier.getHidden(false, feature, pState.c);
+			  pState.setParas(hidden, actTypeLabel, feature);
+			  
+			  Pair<Integer, double[]> optActTypeAndLayer = classifier.getOptActTypeAndLayer(pState);
+			  pState.setActTypeDistribution(optActTypeAndLayer.second);
+
+			  for (int ai = 0; ai < system.nActTypeNum; ai++) {
+				  if(actTypeLabel[ai] < 0)
+					  continue;
+				  boolean bShift = ai == ParsingSystem.shiftActTypeID;
+				  
+				  
+				  if(bShift){
+					  double actTypeLogProb = pState.actTypeScore + Math.log(optActTypeAndLayer.second[ai]);
+					  double depTypeLogProb =  pState.depTypeScore;
+					  HierarchicalDepState newState = new HierarchicalDepState(
+							  pState.c, 
+							  ai, 
+							  -1, 
+							  actTypeLogProb, 
+							  depTypeLogProb, 
+							  pState, 
+							  false);
+					  
+					  lattice.add(newState);
+					  continue;
+				  }
+				  
+				  /*
+				   * it is not shift
+				   */
+				  int[] validDepTypeLabel = system.getValidLabelGivenActType(pState.c, ai);
+				  double[] depTypeLayer = classifier.getDepTypeLayer(false, ai, pState.hiddenLayer, validDepTypeLabel);
+				  classifier.softmax(depTypeLayer, validDepTypeLabel);
+					
+				  
+				  for (int di = 0; di < system.labels.size(); di++) {
+					  
+					  if (validDepTypeLabel[di] < 0)
+						  continue;
+					  
+					  /*
+					   * construct the new state
+					   * 
+					   * #NOTE the score in the state is log() score, but the score array is
+					   *       still probability, for convenient compare
+					   */
+					  double actTypeLogProb = pState.actTypeScore + Math.log(optActTypeAndLayer.second[ai]);
+					  double depTypeLogProb = bShift ? pState.depTypeScore : ( pState.depTypeScore + Math.log(depTypeLayer[di]) );
+					  HierarchicalDepState newState = new HierarchicalDepState(
+							  pState.c, 
+							  ai, 
+							  di, 
+							  actTypeLogProb, 
+							  depTypeLogProb, 
+							  pState, 
+							  false);
+					  
+					  lattice.add(newState);
+				  }
+			  }
+		  }
+			
+			Collections.sort(lattice);
+			beam.clear();
+			
+			for (int li = 0; li < config.nBeam && li < lattice.size(); li++) {
+				lattice.get(li).StateApply(system);
+				beam.add(lattice.get(li));
+			}
+			lattice.clear();
+		  
+		  
+	  } //end nRound
+	  
+	  List<Pair<Double, DependencyTree>> retval = new ArrayList<Pair<Double,DependencyTree>>();
+	  for(HierarchicalDepState s : beam){
+		  retval.add(new Pair<Double, DependencyTree>(s.score, s.c.tree));
+	  }
+	  
+	  return retval;
+	
   }
   
   

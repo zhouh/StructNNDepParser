@@ -109,7 +109,7 @@ public class HierarchicalDepState implements Comparable{
 	@Override
 	public int compareTo(Object o) {
 
-		DepState s = (DepState)o;
+		HierarchicalDepState s = (HierarchicalDepState)o;
 		int retval = score > s.score ? -1 : (score == s.score ? 0 : 1);
 		return retval;
 	}
