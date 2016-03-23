@@ -31,6 +31,8 @@ public class Config
    *   Root token string.
    */
   public static final String ROOT = "-ROOT-";
+  public static final String ROOTLEFT = "-ROOTLEFT-";
+  public static final String ROOTRIGHT = "-ROOTRIGHT-";
 
    /**
    *   Non-existent token string.
@@ -92,13 +94,13 @@ public class Config
   /**
    * Initial global learning rate for AdaGrad training
    */
-  public double adaAlpha = 0.01;
+  public double adaAlpha = 0.1;
 
   /**
    * Regularization parameter. All weight updates are scaled by this
    * single parameter.
    */
-  public double regParameter = 1e-8;
+  public double regParameter = 1e-4;
 
   /**
    * Dropout probability. For each training example we randomly choose
@@ -186,13 +188,15 @@ public class Config
   /**
    *   Early update used in global update
    */
-  public boolean earlyUpdate = true;
+  public boolean earlyUpdate = false;
   
   /**
    *   beam size with beam search decoder
    */
-  public int nBeam = 64;
-  
+  public int nBeam = 4;
+
+  public int nDisNum = 30;
+
   /*
    *  whether to update if get the right dependency tree 
    */
@@ -202,8 +206,17 @@ public class Config
    *  load pretraining model!
    */
   public boolean bUsePretraining = false;
-  
-  public int nOracleDepth = 1;
+
+  /*
+   * use gold tree for reranking in update!
+   */
+  public boolean bGoldMarginUpdate = false;
+  public boolean bGoldUpdate = false;
+  public boolean bRankUpdate = false;
+
+  public boolean hcScore = true;
+
+  public int nOracleDepth = 3;
   
   /*
    * hierarchical beam size 
@@ -214,7 +227,9 @@ public class Config
   /**
    *   margin used in selection oracle!
    */
-  public double dMargin = 0.999;
+  public double dMargin = 1;
+
+  public int nRNNDim = 25;
   
   
   /**
@@ -255,7 +270,7 @@ public class Config
    * max revised action num in best-first reranking
    * 
    */
-  public int nMaxReviseActNum = 100;
+  public int nMaxReviseActNum = 8;
 
   public int nMaxN = 64;
 
@@ -264,6 +279,18 @@ public class Config
   public boolean bBestFirstRevise = false;
   
   public boolean bOutputReranking = false;
+
+  public boolean bUseBestFirstRNNSearch = false;
+  public boolean bUseBeamRNNSearch = false;
+  public boolean bUseBeamSample = false;
+  public boolean bMixReranker = false;
+
+  public boolean bUseExpectUASUpdate = false;
+  public boolean bSoftUpdate = false;
+
+  public boolean bLSTMScorer = false;
+
+  public double dMarginRate = 0.1;
 
   public Config(Properties properties) {
     setProperties(properties);
@@ -300,11 +327,25 @@ public class Config
     nHierarchyActTypeBeamSize = PropertiesUtils.getInt(props, "nHierarchyActTypeBeamSize", nHierarchyActTypeBeamSize);
     nHierarchiyDepTypeBeamSize = PropertiesUtils.getInt(props, "nHierarchiyDepTypeBeamSize", nHierarchiyDepTypeBeamSize);
     dMargin = PropertiesUtils.getDouble(props, "dMargin", dMargin);
+    dMarginRate = PropertiesUtils.getDouble(props, "dMarginRate", dMarginRate);
     nMaxN = PropertiesUtils.getInt(props, "nMaxN", nMaxN);
+    nRNNDim = PropertiesUtils.getInt(props, "nRNNDim", nRNNDim);
+    nDisNum = PropertiesUtils.getInt(props, "nDisNum", nDisNum);
     bBeamNBest  = PropertiesUtils.getBool(props, "bBeamNBest", bBeamNBest);
     bBestFirstRevise  = PropertiesUtils.getBool(props, "bBestFirstRevise", bBestFirstRevise);
     bOutputReranking  = PropertiesUtils.getBool(props, "bOutputReranking", bOutputReranking);
-    
+    bLSTMScorer  = PropertiesUtils.getBool(props, "bLSTMScorer", bLSTMScorer);
+    bUseBestFirstRNNSearch  = PropertiesUtils.getBool(props, "bUseBestFirstRNNSearch", bUseBestFirstRNNSearch);
+    bUseBeamRNNSearch  = PropertiesUtils.getBool(props, "bUseBeamRNNSearch", bUseBeamRNNSearch);
+    bUseExpectUASUpdate  = PropertiesUtils.getBool(props, "bUseExpectUASUpdate", bUseExpectUASUpdate);
+    bGoldMarginUpdate = PropertiesUtils.getBool(props, "bGoldMarginUpdate", bGoldMarginUpdate);
+    bSoftUpdate = PropertiesUtils.getBool(props, "bSoftUpdate", bSoftUpdate);
+    bUseBeamSample = PropertiesUtils.getBool(props, "bUseBeamSample", bUseBeamSample);
+    bMixReranker = PropertiesUtils.getBool(props, "bMixReranker", bMixReranker);
+    bGoldUpdate = PropertiesUtils.getBool(props, "bGoldUpdate", bGoldUpdate);
+    bRankUpdate = PropertiesUtils.getBool(props, "bRankUpdate", bRankUpdate);
+    hcScore = PropertiesUtils.getBool(props, "hcScore", hcScore);
+
     // Runtime parsing options
     sentenceDelimiter = PropertiesUtils.getString(props, "sentenceDelimiter", sentenceDelimiter);
     tagger = PropertiesUtils.getString(props, "tagger.model", tagger);

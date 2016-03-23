@@ -4,15 +4,20 @@ public class RevisedState implements Comparable{
 
 	public ReviseItem item;
 	public HierarchicalDepState state;
+	public double initScore;
 	public double score;  // the score is the negative product of margin in item and score in state 
-						  // the small, the better
+						  // the smaller, the better
 	public RevisedState(ReviseItem item, HierarchicalDepState state, double initStateScore) {
 		super();
 		this.item = item;
 		this.state = state;
 		this.score = - item.margin * initStateScore;
 	}
-	
+
+	public void setInitScore(double initScore) {
+		this.initScore = initScore;
+	}
+
 	@Override
 	public int compareTo(Object o) {
 

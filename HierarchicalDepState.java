@@ -20,7 +20,8 @@ public class HierarchicalDepState implements Comparable{
 	public int[] actTypeLabel = null;
 	public int[] depTypeLabel = null;
 	int[] featureArray = null;
-	HiddenLayer hiddenLayer = null;
+	public HiddenLayer hiddenLayer = null;
+	public int index;
 	
 	public HierarchicalDepState(Configuration c, int actType,
 			int depType, double actTypeScore, double depTypeScore, HierarchicalDepState last, boolean bGold) {
@@ -34,10 +35,14 @@ public class HierarchicalDepState implements Comparable{
 		this.bGold = bGold;
 		this.score = this.actTypeScore + this.depTypeScore; // when generate the state, the score is the action type score
 	}
-	
+
+	public void setIndex(int index) {
+		this.index = index;
+	}
+
 	public HierarchicalDepState(double score, double actTypeScore, double depTypeScore, Configuration c, int actType,
-			int depType, HierarchicalDepState lastState, boolean bGold, int[] actTypeLabel, int[] depTypeLabel,
-			int[] featureArray, HiddenLayer hiddenLayer) {
+								int depType, HierarchicalDepState lastState, boolean bGold, int[] actTypeLabel, int[] depTypeLabel,
+								int[] featureArray, HiddenLayer hiddenLayer) {
 
 		this.actTypeScore = actTypeScore;
 		this.depTypeScore = depTypeScore;
@@ -127,5 +132,14 @@ public class HierarchicalDepState implements Comparable{
 		this.featureArray = featureArray2;
 	}
 
+
+	public String[] getTreeLabels() {
+		String[] labels = new String[c.tree.n];
+		for (int i = 0; i < labels.length; i++) {
+
+			labels[i] = c.tree.getLabel(i + 1);
+		}
+		return labels;
+	}
 
 }

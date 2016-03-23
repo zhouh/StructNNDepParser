@@ -12,7 +12,7 @@ import edu.stanford.nlp.util.CoreMap;
  *
  * @author Danqi Chen
  */
-class DependencyTree {
+public class DependencyTree {
 
   int n;
   List<Integer> head;
@@ -172,15 +172,21 @@ class DependencyTree {
 	  for(int left = 0; left < node; left++)
 		  if(head.get(left) == node){
 			  bHasChild = true;
-			  retval += " "+toBracketNodeString(left, sent);
+			  retval += toBracketNodeString(left, sent);
 		  }
 
-	  retval+= " "+tokens.get(node-1).word()+"/"+tokens.get(node-1).tag();
+    String word = tokens.get(node - 1).word();
+    if(word.equals("("))
+      word = "LB";
+    else if(word.equals(")"))
+      word = "RB";
+
+    retval+= word+"/"+tokens.get(node-1).tag()+" ";
 	  
 	  for (int right = node+1; right <=  n; right++) {
 		
 		  if(head.get(right) == node)
-			  retval += " " + toBracketNodeString(right, sent);
+			  retval += toBracketNodeString(right, sent);
 	  }
 	  
 	  retval += ")";

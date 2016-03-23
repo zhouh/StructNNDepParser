@@ -28,7 +28,7 @@ public class Configuration {
 final List<Integer> stack;
   final List<Integer> buffer;
 
-  final DependencyTree tree;
+  public final DependencyTree tree;
   final CoreMap sentence;
   
   public Configuration(Configuration config) {

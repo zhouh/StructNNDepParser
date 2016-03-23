@@ -1262,6 +1262,80 @@ public class Classifier {
 		return new Pair<Integer, Integer>(optActType, optDepType);
 	}
 
+	public Pair<Integer, Integer> computeHierarchicalScoreAndReturnSecondOpt(int[] feature, Configuration c) {
+
+		int[] actTypeLabel = system.getValidActType(c);
+
+		double[] hidden = new double[config.hiddenSize];
+		int offset = 0;
+		for (int j = 0; j < feature.length; ++j) {
+			int tok = feature[j];
+			int index = tok * Config.numTokens + j;
+
+			if (preMap.containsKey(index)) {
+				int id = preMap.get(index);
+				for (int i = 0; i < config.hiddenSize; ++i)
+					hidden[i] += saved[id][i];
+			} else {
+				for (int i = 0; i < config.hiddenSize; ++i)
+					for (int k = 0; k < config.embeddingSize; ++k)
+						hidden[i] += W1[i][offset + k] * E[tok][k];
+			}
+			offset += config.embeddingSize;
+		}
+
+		for (int i = 0; i < config.hiddenSize; ++i) {
+			hidden[i] += b1[i];
+			hidden[i] = hidden[i] * hidden[i] * hidden[i]; // cube nonlinearity
+		}
+
+		double[] actTypeScores = new double[numActType];
+		int optActType = -1;
+		double optActTypeScore = Double.NEGATIVE_INFINITY;
+		int secondOptActType = -1;
+		double secondOptActTypeScore = Double.NEGATIVE_INFINITY;
+
+		for (int i = 0; i < numActType; ++i) {
+
+			if (actTypeLabel[i] == -1)
+				continue;
+			for (int j = 0; j < config.hiddenSize; ++j)
+				actTypeScores[i] += W2[i][j] * hidden[j];
+
+			if (actTypeScores[i] >= optActTypeScore) {
+				optActTypeScore = actTypeScores[i];
+				optActType = i;
+			}
+		}
+
+		int[] depTypeLabel = system.getValidLabelGivenActType(c, optActType);
+		/*
+		 * for dep labels
+		 */
+		double[] depTypeScores = new double[numDepLabel];
+		int optDepType = -1;
+
+		if (optActType != ParsingSystem.shiftActTypeID) {
+			double optDepTypeScore = Double.NEGATIVE_INFINITY;
+			for (int i = 0; i < numDepLabel; ++i) {
+
+				if (depTypeLabel[i] == -1)
+					continue;
+				for (int j = 0; j < config.hiddenSize; ++j)
+					depTypeScores[i] += labelLayer[optActType][i][j] * hidden[j]; // change
+				// the
+				// index//////////////////////
+
+				if (depTypeScores[i] >= optDepTypeScore) {
+					optDepTypeScore = depTypeScores[i];
+					optDepType = i;
+				}
+			}
+		}
+
+		return new Pair<Integer, Integer>(optActType, optDepType);
+	}
+
 	public Pair<Integer, Double> getOptActType(int[] feature, Configuration c) {
 
 		int[] actTypeLabel = system.getValidActType(c);
@@ -1374,6 +1448,8 @@ public class Classifier {
 
 		return optDepType;
 	}
+
+
 
 	public HiddenLayer getHidden(boolean bTrain, int[] feature, Configuration c) {
 
